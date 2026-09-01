@@ -1,0 +1,8 @@
+#!/usr/bin/env php
+<?php
+
+define('START_TIME', microtime(true));
+
+require __DIR__ . '/Ypf.php';
+
+Ypf::cli();
