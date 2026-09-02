@@ -3,6 +3,7 @@
 namespace App\Controller;
 
 use App\Data\TestData;
+use app\Service\DevService;
 use YpfController;
 
 /**
@@ -62,6 +63,6 @@ class DevController extends YpfController
      */
     public function test(TestData $data)
     {
-        return $data->resp();
+        return (new DevService())->test($data);
     }
 }

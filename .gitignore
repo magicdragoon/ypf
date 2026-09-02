@@ -1,7 +1,4 @@
 .env
 .idea/
-vendor/
 composer.lock
 composer.phar
-storage/cache/*
-storage/log/*

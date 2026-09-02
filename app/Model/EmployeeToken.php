@@ -4,11 +4,11 @@ namespace App\Model;
 use Model;
 
 /**
- * 
+ * 员工凭证
  */
-class AccessToken extends Model
+class EmployeeToken extends Model
 {
-    protected string $table = 'access_token';
+    protected string $table = 'employee_token';
     ###generated###
 
     /**
@@ -31,8 +31,14 @@ class AccessToken extends Model
      */
     public array $accountRoles;
 
+    /**
+     * 访问令牌
+     */
     public string $token;
 
+    /**
+     * 访问令牌MD5
+     */
     public string $md5;
 
     /**
@@ -52,8 +58,8 @@ class AccessToken extends Model
             'app_id' => f('appId', '应用编号', 'int'),
             'account_id' => f('accountId', '账号编号', 'int'),
             'account_roles' => f('accountRoles', '账号角色', 'array'),
-            'token' => f('token', '', 'string'),
-            'md5' => f('md5', '', 'string'),
+            'token' => f('token', '访问令牌', 'string'),
+            'md5' => f('md5', '访问令牌MD5', 'string'),
             'create_time' => f('createTime', '创建时间', 'string'),
             'update_time' => f('updateTime', '更新时间', 'string'),
         ];

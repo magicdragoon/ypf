@@ -45,8 +45,8 @@ class ScryptUtil
             self::$cost,
             self::$blockSize,
             self::$parallelization,
-            self::base64EncodeNoPadding($salt),
-            self::base64EncodeNoPadding($hash)
+            StrUtil::base64Encode($salt),
+            StrUtil::base64Encode($hash)
         );
     }
 
@@ -62,8 +62,8 @@ class ScryptUtil
         $cost = (int) $m[1];
         $r = (int) $m[2];
         $p = (int) $m[3];
-        $salt = self::base64DecodeNoPadding($m[4]);
-        $storedHash = self::base64DecodeNoPadding($m[5]);
+        $salt = StrUtil::base64Decode($m[4]);
+        $storedHash = StrUtil::base64Decode($m[5]);
 
         if ($salt === false || $storedHash === false) {
             return false;
@@ -296,16 +296,5 @@ class ScryptUtil
             $result .= $a[$i] ^ $b[$i];
         }
         return $result;
-    }
-
-    private static function base64EncodeNoPadding(string $data): string
-    {
-        return rtrim(base64_encode($data), '=');
-    }
-
-    private static function base64DecodeNoPadding(string $data): string|false
-    {
-        $padding = (4 - (strlen($data) % 4)) % 4;
-        return base64_decode($data . str_repeat('=', $padding), true);
     }
 }

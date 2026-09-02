@@ -3,6 +3,40 @@ namespace Ypf\Utils;
 
 class StrUtil
 {
+
+    public static function base64Encode(string $data): string
+    {
+        return rtrim(base64_encode($data), '=');
+    }
+
+    public static function base64Decode(string $data): string|false
+    {
+        $padding = (4 - (strlen($data) % 4)) % 4;
+        return base64_decode($data . str_repeat('=', $padding), true);
+    }
+
+    public static function urlEncode(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), ['+' => '-', '/' => '_']), '=');
+    }
+
+    public static function urlDecode(string $data): string|false
+    {
+        $padding = 4 - (strlen($data) % 4);
+        if ($padding !== 4) {
+            $data .= str_repeat('=', $padding);
+        }
+        return base64_decode(strtr($data, ['-' => '+', '_' => '/']), true);
+    }
+
+    /**
+     * 生成 URL-safe base64 随机字符串（无 padding）
+     */
+    public static function randomString(int $size): string
+    {
+        return self::urlEncode(random_bytes((int) ceil($size * 6 / 8)));
+    }
+
     /**
      * 将 snake 命名法转换为驼峰命名法
      */

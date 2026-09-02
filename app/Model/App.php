@@ -8,7 +8,7 @@ use Model;
  */
 class App extends Model
 {
-    protected string $table = 'app';
+    protected string $table = 'apps';
     ###generated###
     
     /**
