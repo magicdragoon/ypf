@@ -1,0 +1,6 @@
+# 强制所有文本文件在签出时使用 LF 换行符
+* text eol=lf
+
+# 明确指定某些二进制文件不进行转换
+*.png binary
+*.jpg binary

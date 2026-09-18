@@ -4,7 +4,7 @@ namespace App\Controller;
 
 use App\Data\TestData;
 use app\Service\DevService;
-use YpfController;
+use Controller;
 
 /**
  * @app 0
@@ -12,7 +12,7 @@ use YpfController;
  * @name 开发工具
  * @auth ACL_NON
  */
-class DevController extends YpfController
+class DevController extends Controller
 {
 
     protected function init()

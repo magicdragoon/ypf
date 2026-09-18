@@ -1,7 +1,7 @@
 <?php
 namespace App\Providers;
 
-use Ypf\Utils\StrUtil;
+use Str;
 
 class TokenProvider
 {
@@ -34,7 +34,7 @@ class TokenProvider
      */
     public function createToken(int $identifier, array $abilities = ['*'], ?int $expiresIn = null): array
     {
-        $seed = StrUtil::randomString($this->tokenSecretLength);
+        $seed = Str::randomString($this->tokenSecretLength);
         $crc = $this->crc32Unsigned($seed);
         $secret = $seed . $crc;
         $hash = hash('sha256', $secret);
@@ -44,9 +44,9 @@ class TokenProvider
             'secret' => $secret,
             'hash' => $hash,
             'value' => $this->tokenPrefix
-                . StrUtil::urlEncode((string) $identifier)
+                . Str::urlEncode((string) $identifier)
                 . '.'
-                . StrUtil::urlEncode($secret),
+                . Str::urlEncode($secret),
             'abilities' => $abilities,
             'expires_at' => $expiresIn ? time() + $expiresIn : null,
         ];
@@ -65,8 +65,8 @@ class TokenProvider
             return false;
         }
 
-        $identifier = StrUtil::urlDecode($parts[0]);
-        $secret = StrUtil::urlDecode($parts[1]);
+        $identifier = Str::urlDecode($parts[0]);
+        $secret = Str::urlDecode($parts[1]);
 
         if ($identifier === false || $secret === false) {
             return false;

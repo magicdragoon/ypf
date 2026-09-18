@@ -1,4 +1,8 @@
 .env
+.env.php
 .idea/
+vendor/
 composer.lock
 composer.phar
+storage/cache/*
+storage/log/*

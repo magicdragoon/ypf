@@ -5,26 +5,20 @@ use OpenSpout\Common\Entity\Style\Color;
 use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
 use OpenSpout\Writer\Common\Creator\Style\StyleBuilder;
 use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
-use Ypf\Utils\ScryptUtil;
-use YpfCommand;
+use Command;
 
-class TestCommand extends YpfCommand
+class TestCommand extends Command
 {
     public function handle()
     {
-        $this->testOpenSpoutReader();
+        $this->testHello();
+        // $this->testOpenSpoutWriter();
+        // $this->testOpenSpoutReader();
     }
 
     private function testHello()
     {
-        echo 'hello world';
-    }
-
-    private function testScrypt()
-    {
-        $hash = '$scrypt$n=16384,r=8,p=1$qQLvxWvSYgQ0fN3yZ//QnQ$Xim3avPo8npUfmfUO+GRnbGqoidaswuGnZiM1ddJXRIhzhpX1ofLTnqVFKTKN2wuZ17HFZeLKSfl+qiWsSe2qQ';
-        $password = '123456';
-        var_dump(ScryptUtil::verify($hash, $password));
+        echo 'hello world', PHP_EOL;
     }
     
     private function testOpenSpoutWriter()

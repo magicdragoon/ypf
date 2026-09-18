@@ -5,76 +5,33 @@ use Model;
 
 /**
  * 应用
+ * @property int $id 主键
+ * @property string $name 名称
+ * @property string|null $key 应用Key
+ * @property string|null $secret 应用密钥
+ * @property int|null $type 应用类型
+ * @property string|null $auth 鉴权
+ * @property array|null $config 供应商设置
+ * @property int $deleted 是否删除
+ * @property \Time $createTime 创建时间
+ * @property \Time $updateTime 更新时间
  */
 class App extends Model
 {
-    protected string $table = 'apps';
-    ###generated###
-    
-    /**
-     * 主键
-     */
-    public int $id;
+    public const TABLE = 'apps';
+    public const CREATED_AT = 'createTime';
+    public const UPDATED_AT = 'updateTime';
 
-    /**
-     * 名称
-     */
-    public string $name;
-
-    /**
-     * 应用Key
-     */
-    public string $key;
-
-    /**
-     * 应用密钥
-     */
-    public string $secret;
-
-    /**
-     * 应用类型
-     */
-    public int $type;
-
-    /**
-     * 鉴权
-     */
-    public string $auth;
-
-    /**
-     * 供应商设置
-     */
-    public array $config;
-
-    /**
-     * 是否删除
-     */
-    public int $deleted;
-
-    /**
-     * 创建时间
-     */
-    public string $createTime;
-
-    /**
-     * 更新时间
-     */
-    public string $updateTime;
-
-    protected function columns()
-    {
-        $this->columns = [
-            'id' => f('id', '主键', 'int'),
-            'name' => f('name', '名称', 'string'),
-            'key' => f('key', '应用Key', 'string'),
-            'secret' => f('secret', '应用密钥', 'string'),
-            'type' => f('type', '应用类型', 'int'),
-            'auth' => f('auth', '鉴权', 'string'),
-            'config' => f('config', '供应商设置', 'array'),
-            'deleted' => f('deleted', '是否删除', 'int'),
-            'create_time' => f('createTime', '创建时间', 'string'),
-            'update_time' => f('updateTime', '更新时间', 'string'),
-        ];
-    }
-    ###generated###
+    public const COLUMNS = [
+        'id' => ['id', '主键', 'int'],
+        'name' => ['name', '名称', 'string'],
+        'key' => ['key', '应用Key', 'string', 'nullable'],
+        'secret' => ['secret', '应用密钥', 'string', 'nullable'],
+        'type' => ['type', '应用类型', 'int', 'nullable'],
+        'auth' => ['auth', '鉴权', 'string', 'nullable'],
+        'config' => ['config', '供应商设置', 'array', 'nullable'],
+        'deleted' => ['deleted', '是否删除', 'int'],
+        'createTime' => ['create_time', '创建时间', 'DateTime'],
+        'updateTime' => ['update_time', '更新时间', 'DateTime'],
+    ];
 }
