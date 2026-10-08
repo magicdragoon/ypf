@@ -1,5 +1,4 @@
 .env
-.env.php
 .idea/
 vendor/
 composer.lock

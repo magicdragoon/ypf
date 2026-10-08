@@ -6,6 +6,7 @@ include APP_PATH . '/YpfTools.php';
 use Command;
 use DB;
 use Model;
+use Ypf;
 use YpfTools;
 
 /**
@@ -46,14 +47,15 @@ class MakeCommand extends Command
 
     protected function model()
     {
+        $dbName = env('DB_NAME');
         $args = $this->getArgv(['table']);
         $table = DB::query("SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES
-            WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = '{DB['dbname']}' AND TABLE_NAME = '{$args['table']}'", [], true);
+            WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = '{$dbName}' AND TABLE_NAME = '{$args['table']}'", [], true);
         if (empty($table)) {
             echo "表{$args['table']}不存在\n";
             exit;
         }
-        YpfTools::scanTable(DB['dbname'], $table, true);
+        YpfTools::scanTable($dbName, $table);
     }
 
     protected function controller_service()
@@ -129,13 +131,12 @@ class MakeCommand extends Command
     {
         if (empty($args)) {
             if ($restful) {
-                $args = $this->getArgv(['class', 'path', 'model']);
+                $args = $this->getArgv(['class', 'model']);
             } else {
-                $args = $this->getArgv(['class', 'path']);
+                $args = $this->getArgv(['class']);
             }
         }
-        $args['path'] = trim($args['path'], '\\');
-        $path = APP_PATH . '/app/Service/' . $args['path'] . '/';
+        $path = APP_PATH . '/app/Service/';
         $file = $path . $args['class'] . 'Service.php';
         if (file_exists($file)) {
             echo "服务{$args['class']}已存在\n";
@@ -149,7 +150,6 @@ class MakeCommand extends Command
         $id++;
         $arr = [
             '{class}' => $args['class'],
-            '{path}' => empty($args['path']) ? '' : ('\\' . $args['path']),
             '{id}' => $id,
         ];
         if ($restful) {
@@ -191,24 +191,15 @@ class MakeCommand extends Command
 
     protected function init()
     {
-        if (isset($this->args['force']) && $this->args['force'] == 'true') {
-            $force = true;
-        } else {
-            $force = false;
+        Ypf::initConfig();
+
+        if (Ypf::isProd()) {
+            return;
         }
-        $index = file_get_contents(APP_PATH . '/public/index.php');
-        // 正则表达式：专门捕获 APP_VERSION 的值
-        $pattern = "/define\s*\(\s*['\"]APP_VERSION['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)/i";
-        preg_match($pattern, $index, $matches);
-        $appVersion = $matches[1] ?? '';
-        if (empty($appVersion)) {
-            echo "APP_VERSION 未定义\n";
-            exit;
-        } else {
-            define('APP_VERSION', $appVersion);
-        }
-        YpfTools::scanDb(DB['dbname'], $force, ['adonis_schema', 'adonis_schema_versions', 'delete_histories']);
+
         YpfTools::init();
+
+        YpfTools::scanDb(env('DB_NAME'));
 
         // 初始化权限
         DB::execute('TRUNCATE TABLE `auths`');
@@ -219,7 +210,7 @@ class MakeCommand extends Command
                 'app' => $auth['app'],
                 'key' => $auth['key'],
                 'name' => $auth['name'],
-                'is_api' => $auth['is_leaf'] ? 1 : 0,
+                'is_api' => $auth['is_api'] ? 1 : 0,
             ]);
         }
         echo '初始化完成', "\n";
@@ -258,14 +249,14 @@ EOF;
 namespace App\Controller{path};
 
 use App\Service{path}\{class}Service;
-use RestfulController;
+use Controller;
 
 /**
  * @app {app}
  * @id {id}00
  * @name {name}
  */
-class {class}Controller extends RestfulController
+class {class}Controller extends Controller
 {
     public const SERVICE = {class}Service::class;
 
@@ -277,7 +268,7 @@ class {class}Controller extends RestfulController
      */
     public function index()
     {
-        return $this->service->index();
+        return (new (self::SERVICE)())->index();
     }
 
     /**
@@ -288,7 +279,7 @@ class {class}Controller extends RestfulController
      */
     public function show()
     {
-        return $this->service->show();
+        return (new (self::SERVICE)())->show();
     }
 
     /**
@@ -299,7 +290,7 @@ class {class}Controller extends RestfulController
      */
     public function store()
     {
-        return $this->service->store();
+        return (new (self::SERVICE)())->store();
     }
 
     /**
@@ -310,7 +301,7 @@ class {class}Controller extends RestfulController
      */
     public function update()
     {
-        return $this->service->update();
+        return (new (self::SERVICE)())->update();
     }
 
     /**
@@ -321,7 +312,7 @@ class {class}Controller extends RestfulController
      */
     public function destroy()
     {
-        return $this->service->destroy();
+        return (new (self::SERVICE)())->destroy();
     }
 }
 
@@ -329,7 +320,7 @@ EOF;
 
     const TEMP_SERVICE = <<<'EOF'
 <?php
-namespace App\Service{path};
+namespace App\Service;
 
 use Service;
 
@@ -343,7 +334,7 @@ EOF;
 
     const TEMP_RESTFUL_SERVICE = <<<'EOF'
 <?php
-namespace App\Service{path};
+namespace App\Service;
 
 use {modelClass};
 use RestfulService;

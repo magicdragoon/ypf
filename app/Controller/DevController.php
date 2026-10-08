@@ -3,8 +3,8 @@
 namespace App\Controller;
 
 use App\Data\TestData;
-use app\Service\DevService;
 use Controller;
+use Ypf;
 
 /**
  * @app 0
@@ -17,7 +17,7 @@ class DevController extends Controller
 
     protected function init()
     {
-        if (!APP_DEV) {
+        if (Ypf::isProd()) {
             throw new \Exception('系统异常');
         }
     }

@@ -15,7 +15,7 @@ class Role extends Model
     public const UPDATED_AT = null;
 
     public const COLUMNS = [
-        'id' => ['id', '编号', 'int'],
-        'name' => ['name', '名称', 'string'],
+        'id' => ['id', '编号', 'int', null],
+        'name' => ['name', '名称', 'string', null],
     ];
 }

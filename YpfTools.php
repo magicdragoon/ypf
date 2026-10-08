@@ -5,6 +5,7 @@ class YpfTools
     private static $route = [];
     private static $classes = [];
     private static $auth = [];
+    private static $s2c = [];
 
     public static function getDocs()
     {
@@ -45,7 +46,7 @@ class YpfTools
                     'key' => $parent['key'],
                     'name' => $parent['name'],
                     'method' => $parent['method'],
-                    'is_leaf' => false,
+                    'is_api' => false,
                 ];
             }
         }
@@ -61,14 +62,12 @@ class YpfTools
         }
 
         try {
-            $envFile = APP_PATH . '/.env.php';
+            $envFile = APP_PATH . '/config/env.php';
             $envContent = file_get_contents($envFile);
 
             $routeStart = strpos($envContent, "ROUTES = [\n") + 9;
             $routeEnd = strpos($envContent, "\n];", $routeStart) + 2;
             $envContent = substr_replace($envContent, var_output(self::$route), $routeStart, $routeEnd - $routeStart);
-
-            $envContent = str_replace('const VERSION = \'' . VERSION . '\';', 'const VERSION = \'' . APP_VERSION . '\';', $envContent);
 
             file_put_contents($envFile, $envContent);
         } catch (Exception) {
@@ -85,10 +84,17 @@ class YpfTools
      * 扫描表
      * @param string $dbName
      * @param array $table
-     * @param bool $force
      */
-    public static function scanTable($dbName, $table, $force = false)
+    public static function scanTable($dbName, $table)
     {
+        if (is_string($table)) {
+            $sql = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES
+                WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = '{$dbName}' AND TABLE_NAME = '{$table}'";
+            $table = DB::queryOne($sql);
+            if (empty($table)) {
+                throw new Exception('表' . $table . '不存在：');
+            }
+        }
         $sql = "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_COMMENT, COLUMN_KEY, EXTRA FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = '{$dbName}' AND TABLE_NAME = '{$table['TABLE_NAME']}' ORDER BY ORDINAL_POSITION;";
         $fieldStr = '';
@@ -99,7 +105,13 @@ class YpfTools
         $updatedAt = null;
         $unique = [];
         foreach (DB::query($sql) as $column) {
-            $columnName = Str::snakeToCamel($column['COLUMN_NAME'], false);
+            $columnName = $column['COLUMN_NAME'];
+            if (str_contains($columnName, '_')) {
+                $columnName = Str::snakeToCamel($columnName, false);
+                if (!isset(self::$s2c[$columnName])) {
+                    self::$s2c[$columnName] = $column['COLUMN_NAME'];
+                }
+            }
             if ($column['COLUMN_KEY'] === 'PRI') {
                 if (empty($primaryKey) || $column['EXTRA'] === 'auto_increment') {
                     $primaryKey = $columnName;
@@ -147,9 +159,23 @@ class YpfTools
                     break;
             }
             $nullable = $column['IS_NULLABLE'] === 'YES';
+
+            if ($column['COLUMN_DEFAULT'] != null) {
+                if ($column['COLUMN_DEFAULT'] == 'CURRENT_TIMESTAMP' || $column['COLUMN_DEFAULT'] == '0000-00-00 00:00:00') {
+                    $column['COLUMN_DEFAULT'] = 'null';
+                } elseif (!is_numeric($column['COLUMN_DEFAULT'])) {
+                    $column['COLUMN_DEFAULT'] = '\'' . $column['COLUMN_DEFAULT'] . '\'';
+                }
+            } else {
+                if (!$nullable) {
+                    $column['COLUMN_DEFAULT'] = 'null';
+                } else {
+                    $column['COLUMN_DEFAULT'] = '\'nullable\'';
+                }
+            }
             $columnStr .= "\n" . ' * @property ' . (($type == 'Time' || $type == 'Date' || $type == 'DateTime') ? '\Time' : $type) . ($nullable ? '|null' : '') . ' $' . $columnName . ' ' . ($column['COLUMN_COMMENT'] ?? '');
             $fieldStr .= "\n";
-            $fieldStr .= '        \'' . $columnName . '\' => [\'' . $column['COLUMN_NAME'] . '\', \'' . $column['COLUMN_COMMENT'] . '\', \'' . $type . '\'' . ($nullable ? ', \'nullable\'' : '') . '],';
+            $fieldStr .= '        \'' . $columnName . '\' => [\'' . $column['COLUMN_NAME'] . '\', \'' . $column['COLUMN_COMMENT'] . '\', \'' . $type . '\', ' . $column['COLUMN_DEFAULT'] . '],';
         }
         $primaryStr = '';
         if (!empty($primaryKey)) {
@@ -183,7 +209,7 @@ class YpfTools
         $fieldStr .= "\n" . '    ';
         $modelName = Str::snakeToCamelSingular($table['TABLE_NAME']);
         $filePath = APP_PATH . '/app/Model/' . $modelName . '.php';
-        if (!file_exists($filePath) || $force) {
+        if (!file_exists($filePath)) {
             $content = <<<EOF
 <?php
 namespace App\Model;
@@ -235,10 +261,9 @@ EOF;
     /**
      * 扫描数据库
      * @param string $dbName
-     * @param bool $force
      * @param array|null $ignoreTables
      */
-    public static function scanDb($dbName, $force = false, $ignoreTables = null)
+    public static function scanDb($dbName, $ignoreTables = null)
     {
         $sql = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES
             WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = '{$dbName}'";
@@ -250,7 +275,22 @@ EOF;
             $sql .= ')';
         }
         foreach (DB::query($sql) as $table) {
-            self::scanTable($dbName, $table, $force);
+            self::scanTable($dbName, $table);
+        }
+        try {
+            $envFile = APP_PATH . '/config/env.php';
+            $envContent = file_get_contents($envFile);
+
+            $routeStart = strpos($envContent, "S2C = [\n") + 6;
+            $routeEnd = strpos($envContent, "\n];", $routeStart) + 2;
+            $envContent = substr_replace($envContent, var_output(array_flip(self::$s2c)), $routeStart, $routeEnd - $routeStart);
+
+            $routeStart = strpos($envContent, "C2S = [\n") + 6;
+            $routeEnd = strpos($envContent, "\n];", $routeStart) + 2;
+            $envContent = substr_replace($envContent, var_output(self::$s2c), $routeStart, $routeEnd - $routeStart);
+
+            file_put_contents($envFile, $envContent);
+        } catch (Exception) {
         }
     }
 
@@ -353,9 +393,8 @@ EOF;
                     throw new Exception($controllerClass . '不是控制器类');
                 }
                 $reflection = new ReflectionClass($controllerClass);
-                $isRestful = is_subclass_of($controllerClass, RestfulController::class);
                 $controllerService = null;
-                if ($isRestful) {
+                if (!empty($controllerClass::SERVICE)) {
                     $controllerService = $controllerClass::SERVICE;
                     self::$classes[$controllerService] = self::getRestfulDoc($controllerService);
                 }
@@ -393,13 +432,17 @@ EOF;
                 if (!empty($methods)) {
                     foreach ($methods as $method) {
                         $methodName = $controllerClass . '@' . $method->getName();
-                        $methodKey = $controllerKey . '.' . Str::camelToSnake($method->getName());
                         $methodDoc = self::parseDoc($method->getDocComment());
                         if (empty($methodDoc)) {
                             continue;
                         }
                         if (!isset($methodDoc['id']) || !isset($methodDoc['name'])) {
                             throw new Exception('错误的接口文档：' . $methodName);
+                        }
+                        if (!empty($methodDoc['key'])) {
+                            $methodKey = $methodDoc['key'];
+                        } else {
+                            $methodKey = $controllerKey . '.' . Str::camelToSnake($method->getName());
                         }
 
                         $parent = intval($methodDoc['parent'] ?? $actionParent);
@@ -416,10 +459,16 @@ EOF;
                             continue;
                         }
 
-                        if (!isset($methodDoc['method'])) {
-                            $methodDoc['method'] = 'post';
+                        if (array_key_exists('menu', $methodDoc)) {
+                            $methodDoc['is_api'] = false;
+                            $methodDoc['method'] = null;
                         } else {
-                            $methodDoc['method'] = strtolower($methodDoc['method']);
+                            $methodDoc['is_api'] = true;
+                            if (!isset($methodDoc['method'])) {
+                                $methodDoc['method'] = 'post';
+                            } else {
+                                $methodDoc['method'] = strtolower($methodDoc['method']);
+                            }
                         }
                         $uri = $methodDoc['uri'] . '@' . $methodDoc['method'];
                         if (isset(self::$route[$uri])) {
@@ -452,7 +501,7 @@ EOF;
                             'request' => [],
                             'response' => [],
                         ];
-                        if ($isRestful && isset(self::$classes[$controllerService]) &&
+                        if (!empty($controllerService) && isset(self::$classes[$controllerService]) &&
                             isset(self::$classes[$controllerService][self::$route[$uri]['method']])) {
                             // Restful接口，从RestfulService获取参数
                             $dataDoc = self::$classes[$controllerService][self::$route[$uri]['method']];
@@ -493,7 +542,7 @@ EOF;
                                 'key' => $methodKey,
                                 'name' => $methodDoc['name'],
                                 'method' => $methodDoc['method'],
-                                'is_leaf' => true,
+                                'is_api' => $methodDoc['is_api'],
                             ];
                         }
                     }

@@ -1,0 +1,6 @@
+控制器 1 + appId(1) + controllerId(3) + actionId(2) + code(4) = 11
+服务   2 + serviceId(3) + methodId(2) + code(4) = 10
+操作   3 + handlerId(3) + methodId(2) + code(4) = 10
+中间件 7 + middlewareId(3) + methodId(2) + code(4) = 10
+工具   8 + utilId(3) + methodId(2) + code(4) = 10
+框架   9 + classId(3) + methodId(2) + code(4) = 10

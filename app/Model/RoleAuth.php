@@ -17,7 +17,7 @@ class RoleAuth extends Model
     public const UPDATED_AT = null;
 
     public const COLUMNS = [
-        'roleId' => ['role_id', '角色编号', 'int'],
-        'authId' => ['auth_id', '权限编号', 'int'],
+        'roleId' => ['role_id', '角色编号', 'int', null],
+        'authId' => ['auth_id', '权限编号', 'int', null],
     ];
 }

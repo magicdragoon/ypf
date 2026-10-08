@@ -19,11 +19,11 @@ class Auth extends Model
     public const UPDATED_AT = null;
 
     public const COLUMNS = [
-        'id' => ['id', '编号', 'int'],
-        'parent' => ['parent', '父编号', 'int'],
-        'app' => ['app', '应用', 'int'],
-        'key' => ['key', '键', 'string'],
-        'name' => ['name', '名称', 'string'],
-        'isApi' => ['is_api', '是否是接口', 'int'],
+        'id' => ['id', '编号', 'int', null],
+        'parent' => ['parent', '父编号', 'int', 0],
+        'app' => ['app', '应用', 'int', 0],
+        'key' => ['key', '键', 'string', null],
+        'name' => ['name', '名称', 'string', null],
+        'isApi' => ['is_api', '是否是接口', 'int', 0],
     ];
 }

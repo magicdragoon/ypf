@@ -1,10 +1,35 @@
 <?php
 
 const APP_PATH = __DIR__;
-include __DIR__ . '/.env.php';
 
+/**
+ * @id 9000
+ */
 class Ypf
 {
+    private static $isProd = false;
+
+    private static $env = [];
+
+    /**
+     * 获取环境变量
+     * @param string $key
+     * @return mixed
+     */
+    public static function env($key, $default = null)
+    {
+        return self::$env[$key] ?? $default;
+    }
+
+    /**
+     * 是否为生产环境
+     * @return bool
+     */
+    public static function isProd()
+    {
+        return self::$isProd;
+    }
+
     /**
      * 获取当前时间戳
      * @return int|null
@@ -29,13 +54,7 @@ class Ypf
     public static function app()
     {
         self::init();
-        // 非命令行，开发环境下或版本号不匹配或未配置路由时，初始化
-        if (APP_DEV || empty(VERSION) || VERSION != APP_VERSION || empty(ROUTES)) {
-            include __DIR__ . '/YpfTools.php';
-            YpfTools::init();
-        }
 
-        Context::set('now', new Time($_SERVER['REQUEST_TIME'] ?? time()));
         $request = new Request(HEADER_ATTRS ?? []);
         $resp = $request->dispatch();
         $log = $request->getLog();
@@ -149,6 +168,32 @@ class Ypf
     }
 
     /**
+     * 初始化配置文件
+     */
+    public static function initConfig()
+    {
+        $config = file_get_contents(__DIR__ . '/config/env.php') . "\n";
+
+        $envs = [];
+        $tmp = file(__DIR__ . '/.env');
+        foreach ($tmp as $env) {
+            $env = trim($env);
+            if (empty($env)) {
+                continue;
+            }
+            $env = explode('=', $env, 2);
+            if (count($env) !== 2) {
+                continue;
+            }
+            $envs[$env[0]] = $env[1];
+        }
+
+        $config .= "const ENV = " . var_output($envs) . ";\n";
+
+        file_put_contents(storage_path('cache/env.php'), $config);
+    }
+
+    /**
      * 初始化上下文
      * @param bool $isCli
      * @return void
@@ -162,16 +207,38 @@ class Ypf
 
         spl_autoload_register('Ypf::autoload');
 
-        ini_set('date.timezone', defined('TIMEZONE') ? TIMEZONE : 'Asia/Shanghai');
+        ini_set('date.timezone', env('TIMEZONE', 'Asia/Shanghai'));
+
+        $configFile = storage_path('cache/env.php');
+        if ($isCli) {
+            if (!file_exists($configFile)) {
+                self::initConfig();
+            }
+        }
+
+        include $configFile;
+
+        self::$env = ENV;
+        self::$isProd = env('APP_ENV', 'dev') === 'prod';
+
+        if (!empty(env('CORS_ORIGIN'))) {
+            header('Access-Control-Allow-Origin: ' . env('CORS_ORIGIN'));
+            header('Access-Control-Allow-Methods: ' . env('CORS_METHODS'));
+            header('Access-Control-Allow-Headers: ' . env('CORS_HEADERS'));
+        }
 
         // 初始化数据库
-        DB::init(DB ?? null);
+        DB::init([
+            'host' => env('DB_HOST'),
+            'port' => env('DB_PORT'),
+            'dbname' => env('DB_NAME'),
+            'username' => env('DB_USERNAME'),
+            'password' => env('DB_PASSWORD'),
+            'charset' => env('DB_CHARSET', 'utf8mb4'),
+        ]);
 
-        if (!empty(CORS_ORIGIN)) {
-            header('Access-Control-Allow-Origin: ' . CORS_ORIGIN);
-            header('Access-Control-Allow-Methods: ' . CORS_METHODS);
-            header('Access-Control-Allow-Headers: ' . CORS_HEADERS);
-        }
+        Context::set('now', new Time($_SERVER['REQUEST_TIME'] ?? time()));
+        Context::set('today', new Time(Date::start(Context::now()->timestamp())));
     }
 
     /**
@@ -218,7 +285,7 @@ class Ypf
         $log .= "\n" . $e->getCode() . ': ' . $e->getMessage();
         $log .= "\n" . $e->getTraceAsString();
         Logger::error($log);
-        if (APP_DEV) {
+        if (!Ypf::isProd()) {
             echo '{"' . RESP_CODE . '": ' . $e->getCode() . ', "' . RESP_MSG . '": "' . $e->getMessage() . '"}';
         } else {
             echo '{"' . RESP_CODE . '": ' . $e->getCode() . ', "' . RESP_MSG . '": "系统异常"}';
@@ -284,6 +351,377 @@ class AppException extends Exception
 }
 
 /**
+ * @id 9001
+ * 路由
+ */
+class Route
+{
+    /**
+     * 路由类
+     * @var string
+     */
+    public $class;
+    /**
+     * 路由方法
+     * @var string
+     */
+    public $method;
+    /**
+     * 路由ID
+     * @var int
+     */
+    public $id;
+    /**
+     * 应用ID
+     * @var int
+     */
+    public $app;
+    /**
+     * 认证ID
+     * @var int
+     */
+    public $auth;
+    /**
+     * 请求URI
+     * @var string|null
+     */
+    public $uri = null;
+    /**
+     * 请求参数
+     * @var string|null
+     */
+    public $req = null;
+
+    /**
+     * 构造函数
+     * @param array $route
+     * @param string|null $uri
+     */
+    public function __construct($route, $uri = null)
+    {
+        $this->class = $route['class'];
+        $this->method = $route['method'];
+        $this->id = intval($route['id']);
+        $this->app = intval($route['app']);
+        $this->auth = intval($route['auth']);
+        $this->req = $route['req'] ?? null;
+        $this->uri = $uri;
+    }
+}
+
+/**
+ * @id 9002
+ * 请求
+ */
+class Request
+{
+    /**
+     * 请求方法
+     * @var string
+     */
+    private $method;
+
+    /**
+     * 请求参数
+     * @var array
+     */
+    private $attr = [];
+
+    /**
+     * 请求头
+     * @var array
+     */
+    private $header = [];
+
+    /**
+     * 请求选项
+     * @var array
+     */
+    private $options = [];
+
+    /**
+     * 路由
+     * @var Route|null
+     */
+    private $route = null;
+
+    /**
+     * 认证中间件
+     * @var AuthMiddleware|null
+     */
+    private $auth = null;
+
+    /**
+     * 请求时间
+     * @var int
+     */
+    private $requestTime = 0;
+
+    /**
+     * 日志
+     * @var string
+     */
+    private $log = '';
+
+    /**
+     * 构造函数
+     * @param array $headers
+     */
+    public function __construct($headers = [])
+    {
+        $this->method = strtolower($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        foreach ($_GET as $key => $value) {
+            $this->attr[$key] = $value;
+        }
+        // post会覆盖get的参数
+        foreach ($_POST as $key => $value) {
+            $this->attr[$key] = $value;
+        }
+        // foreach ($_SERVER as $key => $value) {
+        //     if (str_starts_with($key, 'HTTP_')) {
+        //         $this->header[strtolower(str_replace('_', '-', str_replace('HTTP_', '', $key)))] = $value;
+        //     }
+        // }
+        foreach ($headers as $key => $value) {
+            if (array_key_exists($key, $_SERVER)) {
+                $this->header[$value] = $_SERVER[$key];
+            }
+        }
+        $input = file_get_contents('php://input');
+        if (!empty($input)) {
+            $input = json_decode($input, true);
+            if (!empty($input)) {
+                // input覆盖其他参数
+                foreach ($input as $key => $value) {
+                    $this->attr[$key] = $value;
+                }
+            }
+        }
+        $this->requestTime = $_SERVER['REQUEST_TIME'] ?? 0;
+        Context::setRequest($this);
+    }
+
+    /**
+     * 路由分发
+     */
+    public function dispatch()
+    {
+        $routeKey = trim($_SERVER['PATH_INFO'] ?? '', '\/');
+        if (empty($routeKey)) {
+            $routeKey = '/';
+        } else {
+            // 匹配id
+            $routeKey = preg_replace_callback('/\/\d+/', function($matches) {
+                $this->setId(intval(substr($matches[0], 1)));
+                return '/:id';
+            }, $routeKey);
+        }
+
+        $route = ROUTES[$routeKey . '@' . $this->method];
+        if (empty($route)) {
+            throw new AppException(9002010001, 'Access denied!');
+        }
+        $this->route = new Route($route, $routeKey);
+        if (empty(APPS[$this->route->app])) {
+            throw new AppException(9002010002, 'Access denied!');
+        }
+        // 有id需要登录
+        $app = APPS[$this->route->app];
+        if (!empty($app['auth'])) {
+            $this->auth = new $app['auth']($this->route->app);
+            if ($this->route->auth != ACL_NON) {
+                $this->auth->checkLogin();
+            }
+
+            // 需要权限
+            if ($this->route->auth == ACL_AUTH) {
+                if (!$this->auth->checkAuth($this->route->id)) {
+                    throw new AppException(9002010003, 'Access denied!');
+                }
+            }
+        }
+
+        $controller = new ($this->route->class)();
+        $action = $this->route->method;
+        if (empty($this->route->req)) {
+            $resp = $controller->$action();
+        } else {
+            try {
+                $param = new ($this->route->req)();
+                $param->init();
+            } catch (Throwable $e) {
+                if (!Ypf::isProd()) {
+                    throw $e;
+                }
+                throw new AppException(9002010004, $e->getMessage());
+            }
+            $resp = $controller->$action($param);
+        }
+        return $resp;
+    }
+
+    /**
+     * 设置id
+     * @param int|string $id
+     */
+    public function setId($id)
+    {
+        $this->attr['id'] = $id;
+    }
+
+    /**
+     * 设置选项
+     * @param string $key
+     * @param mixed $value
+     */
+    public function setOption($key, $value)
+    {
+        $this->options[$key] = $value;
+    }
+
+    /**
+     * 获取选项
+     * @param string|null $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public function option($key = null, $default = null)
+    {
+        if (empty($key)) {
+            return $this->options;
+        }
+        if (!array_key_exists($key, $this->options)) {
+            return $default;
+        }
+        return $this->options[$key];
+    }
+
+    /**
+     * 获取认证中间件
+     * @return ?AuthMiddleware
+     */
+    public function auth()
+    {
+        return $this->auth;
+    }
+
+    /**
+     * 获取请求方法
+     * @return string
+     */
+    public function method()
+    {
+        return $this->method;
+    }
+
+    /**
+     * 获取请求时间
+     * @return int
+     */
+    public function requestTime()
+    {
+        return $this->requestTime;
+    }
+
+    /**
+     * 获取请求参数
+     * @param string $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public function get($key, $default = null)
+    {
+        return $this->attr[$key] ?? $default;
+    }
+
+    /**
+     * 获取请求参数数组
+     * @param string $key
+     * @param string $sep
+     * @param array $default
+     * @return array
+     */
+    public function getArr($key, $sep = ',', $default = [])
+    {
+        if (!array_key_exists($key, $this->attr)) {
+            return $default;
+        }
+        if (!is_array($this->attr[$key])) {
+            return explode($sep, $this->attr[$key]);
+        }
+        return $this->attr[$key];
+    }
+
+    /**
+     * 获取请求头
+     * @param string $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public function header($key, $default = null)
+    {
+        return $this->header[$key] ?? $default;
+    }
+
+    /**
+     * 检查请求参数是否存在
+     * @param string $key
+     * @return bool
+     */
+    public function has($key)
+    {
+        return array_key_exists($key, $this->attr);
+    }
+
+    /**
+     * 检查请求头是否存在
+     * @param string $key
+     * @return bool
+     */
+    public function hasHeader($key)
+    {
+        return array_key_exists($key, $this->header);
+    }
+
+    /**
+     * 获取所有参数
+     * @return array
+     */
+    public function attrs()
+    {
+        return $this->attr;
+    }
+
+    /**
+     * 获取所有请求头
+     * @return array
+     */
+    public function headers()
+    {
+        return $this->header;
+    }
+
+    /**
+     * 获取日志
+     * @return string
+     */
+    public function getLog()
+    {
+        $log = '[' . date('Y-m-d H:i:s') . '][' . Ypf::ip() . '] ';
+        if (!empty($this->route)) {
+            $log .= $this->route->uri . '@' . $this->method;
+        }
+        $log .= "\nrequest: " . json($this->attr);
+        $log .= "\nheader: " . json($this->header);
+        if (!empty($this->auth)) {
+            $log .= "\nauth: " . $this->auth->userId() . '(' . $this->auth->token() . ')';
+        }
+        return $log;
+    }
+}
+
+/**
+ * @id 9003
  * 数据库类
  */
 class DB
@@ -318,18 +756,24 @@ class DB
 
     /**
      * 连接数据库
+     * @return PDO
      * @throws Exception
      */
-    private static function connect()
+    public static function connect()
     {
         if (!self::$link) {
-            $dsn = 'mysql:host=' . self::$config['host'] . ';dbname=' . self::$config['dbname'] . ';charset=';
+            $dsn = 'mysql:host=' . self::$config['host'];
+            if (!empty(self::$config['port'])) {
+                $dsn .= ';port=' . self::$config['port'];
+            }
+            $dsn .= ';dbname=' . self::$config['dbname'] . ';charset=';
             $dsn .= self::$config['charset'] ?? 'utf8mb4';
             self::$link = new PDO($dsn, self::$config['username'], self::$config['password'], self::$config['options'] ?? null);
             if (!self::$link) {
                 throw new Exception("db connect error");
             }
         }
+        return self::$link;
     }
 
     /**
@@ -515,12 +959,22 @@ class DB
         $valueKeys = 1;
         $set = [];
         foreach ($data as $key => $value) {
-            $set[] = "{$key} = ?";
-            $values[$valueKeys++] = $value;
+            if (is_array($value)) {
+                if ($value[0] == 'increase') {
+                    $set[] = "`{$key}` = {$key} + ?";
+                    $values[$valueKeys++] = $value[1];
+                } elseif ($value[0] == 'decrease') {
+                    $set[] = "`{$key}` = {$key} - ?";
+                    $values[$valueKeys++] = $value[1];
+                }
+            } else {
+                $set[] = "`{$key}` = ?";
+                $values[$valueKeys++] = $value;
+            }
         }
         $params = [];
         foreach ($where as $key => $value) {
-            $params[] = "{$key} = ?";
+            $params[] = "`{$key}` = ?";
             $values[$valueKeys++] = $value;
         }
         $sql = "UPDATE `{$table}` SET " . implode(',', $set) . " WHERE 1=1 AND " . implode(' AND ', $params);
@@ -666,952 +1120,7 @@ class DB
 }
 
 /**
- * 控制器
- */
-class Controller
-{
-    public function __construct()
-    {
-        $this->init();
-    }
-
-    /**
-     * 初始化
-     */
-    protected function init()
-    {
-
-    }
-}
-
-/**
- * RESTful控制器
- */
-class RestfulController extends Controller
-{
-
-    public const SERVICE = '';
-
-    /**
-     * 服务
-     * @var RestfulService|static::SERVICE
-     */
-    protected $service;
-
-    public function __construct()
-    {
-        parent::__construct();
-        if (empty(static::SERVICE) || !is_subclass_of(static::SERVICE, RestfulService::class)) {
-            throw new AppException(9004000001, 'Service class must extend RestfulService!');
-        }
-        $service = static::SERVICE;
-        $this->service = new $service();
-    }
-}
-
-/**
- * 路由
- */
-class Route
-{
-    /**
-     * 路由类
-     * @var string
-     */
-    public $class;
-    /**
-     * 路由方法
-     * @var string
-     */
-    public $method;
-    /**
-     * 路由ID
-     * @var int
-     */
-    public $id;
-    /**
-     * 应用ID
-     * @var int
-     */
-    public $app;
-    /**
-     * 认证ID
-     * @var int
-     */
-    public $auth;
-    /**
-     * 请求URI
-     * @var string|null
-     */
-    public $uri = null;
-    /**
-     * 请求参数
-     * @var string|null
-     */
-    public $req = null;
-
-    /**
-     * 构造函数
-     * @param array $route
-     * @param string|null $uri
-     */
-    public function __construct($route, $uri = null)
-    {
-        $this->class = $route['class'];
-        $this->method = $route['method'];
-        $this->id = intval($route['id']);
-        $this->app = intval($route['app']);
-        $this->auth = intval($route['auth']);
-        $this->req = $route['req'] ?? null;
-        $this->uri = $uri;
-    }
-}
-
-/**
- * 请求
- */
-class Request
-{
-    /**
-     * 请求方法
-     * @var string
-     */
-    private $method;
-
-    /**
-     * 请求参数
-     * @var array
-     */
-    private $attr = [];
-
-    /**
-     * 请求头
-     * @var array
-     */
-    private $header = [];
-
-    /**
-     * 请求选项
-     * @var array
-     */
-    private $options = [];
-
-    /**
-     * 路由
-     * @var Route|null
-     */
-    private $route = null;
-
-    /**
-     * 认证中间件
-     * @var AuthMiddleware|null
-     */
-    private $auth = null;
-
-    /**
-     * 请求时间
-     * @var int
-     */
-    private $requestTime = 0;
-
-    /**
-     * 日志
-     * @var string
-     */
-    private $log = '';
-
-    /**
-     * 构造函数
-     * @param array $headers
-     */
-    public function __construct($headers = [])
-    {
-        $this->method = strtolower($_SERVER['REQUEST_METHOD'] ?? 'GET');
-        foreach ($_GET as $key => $value) {
-            $this->attr[$key] = $value;
-        }
-        // post会覆盖get的参数
-        foreach ($_POST as $key => $value) {
-            $this->attr[$key] = $value;
-        }
-        foreach ($_SERVER as $key => $value) {
-            if (isset($headers[$key])) {
-                $this->header[$headers[$key]] = $value;
-            }
-        }
-        $input = file_get_contents('php://input');
-        if (!empty($input)) {
-            $input = json_decode($input, true);
-            if (!empty($input)) {
-                // input覆盖其他参数
-                foreach ($input as $key => $value) {
-                    $this->attr[$key] = $value;
-                }
-            }
-        }
-        $this->requestTime = $_SERVER['REQUEST_TIME'] ?? 0;
-        Context::setRequest($this);
-    }
-
-    /**
-     * 路由分发
-     */
-    public function dispatch()
-    {
-        $routeKey = trim($_SERVER['PATH_INFO'] ?? '', '\/');
-        if (empty($routeKey)) {
-            $routeKey = '/';
-        } else {
-            // 匹配id
-            $routeKey = preg_replace_callback('/\/\d+/', function($matches) {
-                $this->setId(intval(substr($matches[0], 1)));
-                return '/:id';
-            }, $routeKey);
-            // 匹配no
-            if (!empty(URL_NO) && empty($this->has('id'))) {
-                $routeKey = preg_replace_callback('/\/[A-Z]{2}-[A-Za-z0-9]{32}/', function($matches) {
-                    $this->setId(substr($matches[0], 1));
-                    return '/:id';
-                }, $routeKey);
-            }
-        }
-
-        $route = ROUTES[$routeKey . '@' . $this->method];
-        if (empty($route)) {
-            throw new AppException(9002010001, 'Access denied!');
-        }
-        $this->route = new Route($route, $routeKey);
-        if (empty(APPS[$this->route->app])) {
-            throw new AppException(9002010002, 'Access denied!');
-        }
-        // 有id需要登录
-        $app = APPS[$this->route->app];
-        if (!empty($app['auth'])) {
-            $this->auth = new $app['auth']($this->route->app);
-            if ($this->route->auth != ACL_NON) {
-                $this->auth->checkLogin();
-            }
-
-            // 需要权限
-            if ($this->route->auth == ACL_AUTH) {
-                if (!$this->auth->checkAuth($this->route->id)) {
-                    throw new AppException(9002010003, 'Access denied!');
-                }
-            }
-        }
-
-        $controller = new ($this->route->class)();
-        $action = $this->route->method;
-        if (empty($this->route->req)) {
-            $resp = $controller->$action();
-        } else {
-            try {
-                $param = new ($this->route->req)();
-                $param->init();
-            } catch (Throwable $e) {
-                if (APP_DEV) {
-                    throw $e;
-                }
-                throw new AppException(9002010004, $e->getMessage());
-            }
-            $resp = $controller->$action($param);
-        }
-        return $resp;
-    }
-
-    /**
-     * 设置id
-     * @param int|string $id
-     */
-    public function setId($id)
-    {
-        $this->attr['id'] = $id;
-    }
-
-    /**
-     * 设置选项
-     * @param string $key
-     * @param mixed $value
-     */
-    public function setOption($key, $value)
-    {
-        $this->options[$key] = $value;
-    }
-
-    /**
-     * 获取选项
-     * @param string|null $key
-     * @param mixed $default
-     * @return mixed
-     */
-    public function option($key = null, $default = null)
-    {
-        if (empty($key)) {
-            return $this->options;
-        }
-        if (!array_key_exists($key, $this->options)) {
-            return $default;
-        }
-        return $this->options[$key];
-    }
-
-    /**
-     * 获取认证中间件
-     * @return ?AuthMiddleware
-     */
-    public function auth()
-    {
-        return $this->auth;
-    }
-
-    /**
-     * 获取请求方法
-     * @return string
-     */
-    public function method()
-    {
-        return $this->method;
-    }
-
-    /**
-     * 获取请求时间
-     * @return int
-     */
-    public function requestTime()
-    {
-        return $this->requestTime;
-    }
-
-    /**
-     * 获取请求参数
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
-     */
-    public function get($key, $default = null)
-    {
-        return $this->attr[$key] ?? $default;
-    }
-
-    /**
-     * 获取请求参数数组
-     * @param string $key
-     * @param string $sep
-     * @param array $default
-     * @return array
-     */
-    public function getArr($key, $sep = ',', $default = [])
-    {
-        if (!array_key_exists($key, $this->attr)) {
-            return $default;
-        }
-        if (!is_array($this->attr[$key])) {
-            return explode($sep, $this->attr[$key]);
-        }
-        return $this->attr[$key];
-    }
-
-    /**
-     * 获取请求头
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
-     */
-    public function header($key, $default = null)
-    {
-        return $this->header[$key] ?? $default;
-    }
-
-    /**
-     * 检查请求参数是否存在
-     * @param string $key
-     * @return bool
-     */
-    public function has($key)
-    {
-        return array_key_exists($key, $this->attr);
-    }
-
-    /**
-     * 检查请求头是否存在
-     * @param string $key
-     * @return bool
-     */
-    public function hasHeader($key)
-    {
-        return array_key_exists($key, $this->header);
-    }
-
-    /**
-     * 获取所有参数
-     * @return array
-     */
-    public function attrs()
-    {
-        return $this->attr;
-    }
-
-    /**
-     * 获取所有请求头
-     * @return array
-     */
-    public function headers()
-    {
-        return $this->header;
-    }
-
-    /**
-     * 获取日志
-     * @return string
-     */
-    public function getLog()
-    {
-        $log = '[' . date('Y-m-d H:i:s') . '][' . Ypf::ip() . '] ';
-        if (!empty($this->route)) {
-            $log .= $this->route->uri . '@' . $this->method;
-        }
-        $log .= "\nrequest: " . json($this->attr);
-        $log .= "\nheader: " . json($this->header);
-        if (!empty($this->auth)) {
-            $log .= "\nauth: " . $this->auth->userId() . '(' . $this->auth->token() . ')';
-        }
-        return $log;
-    }
-}
-
-/**
- * 认证中间件
- */
-abstract class AuthMiddleware
-{
-    /**
-     * 过期时间，单位秒
-     * @var int
-     */
-    protected $timeout = 1800;
-
-    /**
-     * 应用id
-     * @var int
-     */
-    protected $appId = 0;
-    /**
-     * 请求
-     * @var Request
-     */
-    protected $request;
-
-    /**
-     * 用户名
-     * @var string
-     */
-    protected $username = 'username';
-    /**
-     * 密码
-     * @var string
-     */
-    protected $password = 'password';
-    /**
-     * 加密方式
-     * @var string
-     */
-    protected $encrypt = 'md5';
-    /**
-     * 用户id
-     * @var int
-     */
-    protected $userId = 0;
-    /**
-     * 令牌id
-     * @var int
-     */
-    protected $tokenId = 0;
-    /**
-     * 令牌
-     * @var string
-     */
-    protected $token = '';
-    /**
-     * 角色
-     * @var array
-     */
-    protected $roles = [];
-    /**
-     * 扩展属性
-     * @var array
-     */
-    protected $attrs = [];
-
-    /**
-     * 构造函数
-     * @param int $appId 应用id
-     */
-    public function __construct($appId = 0)
-    {
-        $this->request = Context::getRequest();
-        $this->appId = $appId;
-    }
-
-    /**
-     * 获取角色
-     * @return array
-     */
-    public function roles()
-    {
-        return $this->roles;
-    }
-
-    /**
-     * 获取用户id
-     * @return int
-     */
-    public function userId()
-    {
-        return $this->userId;
-    }
-
-    /**
-     * 获取令牌
-     * @return string
-     */
-    public function token()
-    {
-        return $this->token;
-    }
-
-    /**
-     * 获取扩展属性
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
-     */
-    public function extra($key, $default = null)
-    {
-        return $this->attrs[$key] ?? $default;
-    }
-
-    /**
-     * 检查认证
-     * @param int $apiId
-     * @return bool
-     */
-    abstract public function checkAuth($apiId);
-
-    /**
-     * 检查登录
-     * @return void
-     */
-    abstract public function checkLogin();
-
-    /**
-     * 退出登录
-     * @return void
-     */
-    abstract public function logout();
-
-    /**
-     * 获取令牌
-     * @param int $id
-     * @param int $expiresIn
-     * @return array
-     */
-    abstract public function getToken($id, $expiresIn = 86400);
-
-    /**
-     * 获取用户
-     * @return mixed
-     */
-    abstract public function getUser();
-
-    /**
-     * 生成密码哈希
-     * @param string $password
-     * @return string
-     */
-    abstract public function makePassword($password);
-
-    /**
-     * 验证密码哈希
-     * @param string $password
-     * @param string $hashPassword
-     * @return bool
-     */
-    abstract public function verifyPassword($password, $hashPassword);
-}
-
-/**
- * 命令
- */
-abstract class Command
-{
-    /**
-     * 命令参数
-     * @var array
-     */
-    protected $args = [];
-    /**
-     * 命令参数
-     * @var array
-     */
-    protected $argv = [];
-    /**
-     * 创建别名
-     * @var array
-     */
-    protected $alias = [];
-
-    /**
-     * 构造函数
-     * @param array $args
-     * @param array $argv
-     */
-    public function __construct($args = [], $argv = [])
-    {
-        $this->args = $args;
-        $this->argv = $argv;
-    }
-
-    /**
-     * 处理命令
-     * @return void
-     */
-    public function handle()
-    {
-        if (isset($this->args['command'])) {
-            $command = $this->alias[$this->args['command']] ?? $this->args['command'];
-        } elseif (isset($this->args['c'])) {
-            $command = $this->alias[$this->args['c']] ?? $this->args['c'];
-        } else {
-            echo '请输入命令', "\n";
-            exit;
-        }
-        if (!method_exists($this, $command)) {
-            throw new Exception($command . '不存在');
-        }
-        $this->$command();
-        echo '操作完成', "\n";
-    }
-
-    /**
-     * 获取参数
-     * @param array $keys
-     * @return array
-     */
-    protected function getArgv($keys)
-    {
-        if (count($keys) != count($this->argv)) {
-            throw new Exception('参数格式错误: ' . implode(' ', $keys));
-        }
-        $argv = [];
-        foreach ($keys as $k => $v) {
-            if (array_key_exists($k, $this->argv)) {
-                $argv[$v] = $this->argv[$k];
-            }
-        }
-        return $argv;
-    }
-}
-
-/**
- * 数据
- */
-class Data
-{
-    /**
-     * 请求参数
-     * @var array
-     */
-    public const REQ = [];
-    /**
-     * 响应参数
-     * @var array
-     */
-    public const RESP = [];
-    /**
-     * 每页数量
-     * @var int
-     */
-    public const PRE_PAGE = 0;
-
-    /**
-     * 请求参数
-     * @var array
-     */
-    protected $input = [];
-    /**
-     * 响应参数
-     * @var array
-     */
-    protected $output = [];
-    /**
-     * 扩展属性
-     * @var array
-     */
-    protected $attrs = [];
-    /**
-     * 响应
-     * @var array
-     */
-    protected $resp = [];
-    /**
-     * 是否分页
-     * @var bool
-     */
-    protected $isPaginated = false;
-    /**
-     * 请求
-     * @var Request
-     */
-    protected $request;
-
-    public function __construct()
-    {
-        $this->input = fcheck(static::REQ);
-        $this->output = fcheck(static::RESP);
-    }
-
-    /**
-     * 获取请求
-     * @return Request
-     */
-    public function request()
-    {
-        return $this->request;
-    }
-
-    /**
-     * 获取响应
-     * @return array
-     */
-    public function resp()
-    {
-        $resp = [];
-        foreach ($this->output as $k => $v) {
-            if (array_key_exists($k, $this->resp)) {
-                $resp[$k] = $this->getValue($v->type, $this->resp[$k], $v->name);
-            } elseif (!empty($v->default)) {
-                $resp[$k] = $v->default;
-            } else {
-                throw new Exception($v->name . '不能为空');
-            }
-        }
-        return $resp;
-    }
-
-    /**
-     * 检查扩展属性是否存在
-     * @param string $key
-     * @return bool
-     */
-    public function has($key)
-    {
-        return array_key_exists($key, $this->attrs);
-    }
-
-    /**
-     * 获取属性
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
-     */
-    public function get($key, $default = null)
-    {
-        return $this->attrs[$key] ?? $default;
-    }
-
-    /**
-     * 设置属性
-     * @param string $key
-     * @param mixed $value
-     */
-    public function set($key, $value)
-    {
-        $this->resp[$key] = $value;
-    }
-
-    /**
-     * 使用数组设置属性
-     * @param array $array
-     */
-    public function setArray($array)
-    {
-        foreach ($array as $k => $v) {
-            $this->set($k, $v);
-        }
-    }
-
-    /**
-     * 传递属性
-     * @param string $key
-     */
-    public function pass($key)
-    {
-        if (!isset($this->input[$key])) {
-            throw new Exception($key . '未定义');
-        }
-        if (!array_key_exists($key, $this->attrs)) {
-            throw new Exception($key . '未传入');
-        }
-        $this->resp[$key] = $this->attrs[$key];
-    }
-
-    /**
-     * 初始化
-     */
-    public function init()
-    {
-        $this->request = Context::getRequest();
-        $this->attrs = $this->initAttrs($this->input, $this->request->attrs());
-    }
-
-    /**
-     * 初始化属性
-     * @param array $input
-     * @param array $attrs
-     * @return array
-     */
-    protected function initAttrs($input, $attrs)
-    {
-        $arr = [];
-        foreach ($input as $k => $v) {
-            if ($v instanceof Field) {
-                if (!array_key_exists($k, $attrs)) {
-                    if ($v->required) {
-                        throw new Exception($v->name . '不能为空');
-                    }
-                    continue;
-                }
-                $arr[$k] = $this->getValue($v->type, $attrs[$k], $v->name);
-            } elseif (is_array($v)) {
-                if (!array_key_exists($k, $attrs)) {
-                    if ($v['required']) {
-                        throw new Exception($v['name'] . '不能为空');
-                    }
-                    continue;
-                }
-                if (empty($v['children'])) {
-                    $arr[$k] = $attrs[$k];
-                } elseif ($v['format'] == null) {
-                    $arr[$k] = $this->initAttrs($v['children'], $attrs[$k]);
-                } elseif ($v['format'] == 'array' && is_array($attrs[$k])) {
-                    foreach ($attrs[$k] as $kk => $vv) {
-                        $arr[$k][$kk] = $this->initAttrs($v['children'], $vv);
-                    }
-                }
-            }
-        }
-        return $arr;
-    }
-
-    /**
-     * 获取当前时间
-     * @return int
-     */
-    public function now()
-    {
-        if (!empty($this->request)) {
-            return $this->request->requestTime();
-        }
-        return time();
-    }
-
-    /**
-     * 检查字段配置
-     * @param array $config
-     * @param array $return
-     */
-    protected function checkField($config, &$return)
-    {
-        foreach ($config as $v) {
-            switch ($v) {
-                case 'required':
-                    $return['required'] = true;
-                    break;
-                default:
-                    $tmp = explode(':', $v);
-                    switch ($tmp[0]) {
-                        case 'default':
-                            if (!empty($tmp[1])) {
-                                $return['default'] = $tmp[1];
-                            }
-                            break;
-                    }
-                    break;
-            }
-        }
-    }
-
-    /**
-     * 获取属性值
-     * @param string $type
-     * @param mixed $v
-     * @param string $name
-     * @return mixed
-     */
-    protected function getValue($type, $v, $name)
-    {
-        $tmp = explode('|', $type);
-        $type = $tmp[0];
-        $subType = $tmp[1] ?? null;
-        switch ($type) {
-            case 'int':
-                return intval($v);
-            case 'float':
-                return floatval($v);
-            case 'Time':
-                return empty($v) ? null : (is_string($v) ? $v : $v->toString());
-            case 'array':
-                if (!is_array($v) && $v !== null) {
-                    throw new AppException(9003010001, $name . '必须是数组');
-                }
-
-                switch ($subType) {
-                    case 'int':
-                        return array_map('intval', $v);
-                    case 'float':
-                        return array_map('floatval', $v);
-                    default:
-                        return $v;
-                }
-            default:
-                return $v;
-        }
-    }
-
-    /**
-     * 获取文档
-     * @return array
-     */
-    public function getDoc()
-    {
-        $doc = [
-            'request' => [],
-            'response' => [],
-        ];
-        foreach ($this->input as $k=>$v) {
-            $doc['request'][] = [
-                'field' => $k,
-                'name' => $v->name,
-                'type' => $v->type,
-                'required' => $v->required,
-                'default' => $v->default,
-                'validate' => $v->validate,
-            ];
-        }
-        foreach ($this->output as $k=>$v) {
-            $doc['response'][] = [
-                'field' => $k,
-                'name' => $v->name,
-                'type' => $v->type,
-                'default' => $v->default,
-            ];
-        }
-
-        return $doc;
-    }
-}
-
-/**
+ * @id 9004
  * 查询构建器
  */
 class QueryBuilder
@@ -1698,6 +1207,27 @@ class QueryBuilder
     }
 
     /**
+     * 查询构建器
+     * @var QueryBuilder[]
+     */
+    protected $queries = [];
+
+    /**
+     * 合并查询
+     * @param QueryBuilder ...$queries
+     * @return static
+     */
+    public static function union(...$queries)
+    {
+        $query = new self(Model::class);
+        $query->queries = $queries;
+        foreach ($queries as $v) {
+            $query->bindings = array_merge($query->bindings, $v->getBindings());
+        }
+        return $query;
+    }
+
+    /**
      * 构建查询
      * @return array
      */
@@ -1707,6 +1237,27 @@ class QueryBuilder
             $this->where . ' ' . $this->toSql(),
             $this->bindings,
         ];
+    }
+
+    /**
+     * 转换为SQL
+     * @return string
+     */
+    public function toUnionSql()
+    {
+        $tmp = [];
+        foreach ($this->queries as $v) {
+            $tmp[] = $v->toSelectSql();
+        }
+        $sql = 'SELECT ';
+        if (isset($this->key)) {
+            $sql .= $this->column($this->key, 't') . ', ';
+        }
+        $sql .= 't.* FROM (' . implode(' UNION ALL ', $tmp) . ') AS t';
+        if (!empty($this->order)) {
+            $sql .= ' ORDER BY ' . $this->order;
+        }
+        return $sql;
     }
 
     /**
@@ -1757,7 +1308,7 @@ class QueryBuilder
      */
     private function column($column, $alias = null)
     {
-        return ($alias ?? $this->alias) . '.`' . $column . '`';
+        return ($alias ?? $this->alias) . '.`' . (C2S[$column] ?? $column) . '`';
     }
 
     /**
@@ -2046,11 +1597,16 @@ class QueryBuilder
     /**
      * 设置返回数组键
      * @param string $str
+     * @param string|null $alias
      * @return static
      */
-    public function key($str)
+    public function key($str, $alias = null)
     {
-        $this->key = $str;
+        if (empty($this->queries)) {
+            $this->key = $this->column($str, $alias);
+        } else {
+            $this->key = $str;
+        }
         return $this;
     }
 
@@ -2063,6 +1619,21 @@ class QueryBuilder
      */
     public function order($v1, $v2 = 'asc', $alias = null)
     {
+        if (!empty($this->queries)) {
+            if (is_array($v1)) {
+                $t = [];
+                foreach ($v1 as $k=>$v) {
+                    if (is_string($k) && is_string($v)) {
+                        $t[] = '`' .$k . '` ' . $v;
+                    } else {
+                        $t[] = '`' .$k . '` asc';
+                    }
+                }
+                $v1 = implode(',', $t);
+            }
+            $this->order = $v1;
+            return $this;
+        }
         $this->order = $this->column($v1, $alias) . ' ' . $v2;
         return $this;
     }
@@ -2116,21 +1687,29 @@ class QueryBuilder
      * @param string $table
      * @param string $alias
      * @param array $on
-     * @param array $fields
+     * @param array|string $fields
      * @return static
      */
     public function join($table, $alias, $on, $fields = [])
     {
-        if (empty($fields)) {
-            throw new AppException(9006000001, 'fields is empty');
-        }
-        if (empty($on)) {
-            throw new AppException(9006000002, 'on is empty');
-        }
-        $sql = 'inner join `' . $table . '` ' . $alias . ' ON ' . implode(' AND ', array_map(fn($k, $v) => $alias . '.`' . $k . '` = ' . $this->alias . '.`' . $v . '`', array_keys($on), array_values($on)));
+        $sql = 'inner join `' . $table . '` ' . $alias . ' ON ' . $this->implodeOn($on, $alias);
         $this->joins[] = $sql;
-        foreach ($fields as $k=>$v) {
-            $this->field .= ', ' . $alias . '.`' . $k . '` AS `' . $v . '`';
+        if (!empty($fields)) {
+            if (is_array($fields)) {
+                foreach ($fields as $k=>$v) {
+                    if (is_string($k)) {
+                        $this->field .= ', ' . $alias . '.`' . $k . '` AS `' . $v . '`';
+                    } else {
+                        $this->field .= ', ' . $alias . '.`' . $v . '`';
+                    }
+                }
+            } elseif (is_string($fields)) {
+                if (is_subclass_of($fields, Model::class)) {
+                    foreach ($fields::COLUMNS as $v) {
+                        $this->field .= ', ' . $alias . '.`' . $v[0] . '` AS `' . $alias . '_' . $v[0] . '`';
+                    }
+                }
+            }
         }
 
         return $this;
@@ -2140,81 +1719,53 @@ class QueryBuilder
      * 设置 Left Join
      * @param string $table
      * @param string $alias
-     * @param array $on
+     * @param array|string $on
      * @param array $fields
      * @param bool $inCount
      * @return static
      */
     public function leftJoin($table, $alias, $on, $fields = [], $inCount = false)
     {
-        if (empty($fields)) {
-            throw new AppException(9006000001, 'fields is empty');
-        }
-        if (empty($on)) {
-            throw new AppException(9006000002, 'on is empty');
-        }
-        $sql = 'left join `' . $table . '` ' . $alias . ' ON ' . implode(' AND ', array_map(fn($k, $v) => $alias . '.`' . $k . '` = ' . $this->alias . '.`' . $v . '`', array_keys($on), array_values($on)));
+        $sql = 'left join `' . $table . '` ' . $alias . ' ON ' . $this->implodeOn($on, $alias);
         if ($inCount) {
             $this->joins[] = $sql;
         } else {
             $this->leftJoins[] = $sql;
         }
-        foreach ($fields as $k=>$v) {
-            $this->field .= ', ' . $alias . '.`' . $k . '` AS `' . $v . '`';
+        if (!empty($fields)) {
+            foreach ($fields as $k=>$v) {
+                $this->field .= ', ' . $alias . '.`' . $k . '` AS `' . $v . '`';
+            }
         }
 
         return $this;
     }
 
     /**
-     * 获取分页
-     * @param int $page
-     * @param int $size
-     * @param bool $model
-     * @return array
+     * 合并 On 条件
+     * @param array|string $on
+     * @param string|null $alias
+     * @return string
      */
-    public function getPage($page = 1, $size = 20, $model = true)
+    public function implodeOn($on, $alias)
     {
-        $result = [
-            QUERY_ITEMS => [],
-            QUERY_PAGES => [
-                'perPage' => $size,
-                'total' => 0,
-                'currentPage' => 0,
-                'lastPage' => 0,
-            ],
-        ];
-        [$where, $params] = $this->build();
-        $sql = 'SELECT count(*) as cnt FROM ' . $this->table . ' ' . implode(' ', $this->joins) . ' WHERE 1=1 ' . $where;
-        $rs = DB::execute($sql, $params);
-        $row = $rs->fetch(PDO::FETCH_ASSOC);
-        if (empty($row) || empty($row['cnt'])) {
-            return $result;
+        if (empty($on)) {
+            throw new AppException(9004000001, 'on is empty');
         }
-        $result[QUERY_PAGES]['total'] = intval($row['cnt']);
-        $result[QUERY_PAGES]['lastPage'] = ceil($result[QUERY_PAGES]['total'] / $result[QUERY_PAGES]['perPage']);
-        if ($page > $result[QUERY_PAGES]['lastPage']) {
-            $page = $result[QUERY_PAGES]['lastPage'];
-        } elseif ($page < 1) {
-            $page = 1;
-        }
-        $result[QUERY_PAGES]['currentPage'] = $page;
-        $offset = ($page - 1) * $size;
-        $sql = 'SELECT ' . $this->field . ' FROM ' . $this->table . ' ' .
-            implode(' ', $this->joins) . ' ' . implode(' ', $this->leftJoins) . ' WHERE 1=1 ' . $where;
-        if (!empty($this->order)) {
-            $sql .= ' ORDER BY ' . $this->order;
-        }
-        $sql .= ' LIMIT ' . $offset . ', ' . $size;
-        $rs = DB::execute($sql, $params);
-        if (!$model || empty($this->model)) {
-            $result[QUERY_ITEMS] = $rs->fetchAll(PDO::FETCH_ASSOC);
-        } else {
-            while ($row = $this->fetch()) {
-                $result[QUERY_ITEMS][] = new $this->model($row);
+        if (is_array($on)) {
+            foreach ($on as $k=>$v) {
+                if (is_array($v)) {
+                    if (count($v) != 2) {
+                        throw new AppException(9004000002, 'on is error');
+                    }
+                    $on[$k] = $alias . '.`' . $k . '` = ' . $v[0] . '.`' . $v[1] . '`';
+                } else {
+                    $on[$k] = $alias . '.`' . $k . '` = ' . $this->alias . '.`' . $v . '`';
+                }
             }
+            $on = implode(' AND ', $on);
         }
-        return $result;
+        return $on;
     }
 
     /**
@@ -2231,6 +1782,13 @@ class QueryBuilder
      */
     public function execute($field = '*', $first = false)
     {
+        [$sql, $params] = $this->buildExecute($field, $first);
+        $this->rs = DB::execute($sql, $params);
+        return $this;
+    }
+
+    private function buildExecute($field = '*', $first = false)
+    {
         [$where, $params] = $this->build();
         $sql = 'SELECT ' . $field . ' FROM ' . $this->table . ' ' .
             implode(' ', $this->joins) . ' ' . implode(' ', $this->leftJoins) . ' WHERE 1=1 ' . $where;
@@ -2240,38 +1798,65 @@ class QueryBuilder
         if ($first) {
             $sql .= ' LIMIT 1';
         }
-        $this->rs = DB::execute($sql, $params);
-        return $this;
+        return [$sql, $params];
     }
 
     /**
      * 获取查询结果
+     * @param int $fetch
      * @return array|null
      */
-    public function fetch()
+    public function fetch($fetch = PDO::FETCH_ASSOC)
     {
         if (empty($this->rs)) {
             return null;
         }
-        $row = $this->rs->fetch(PDO::FETCH_ASSOC);
+        $row = $this->rs->fetch($fetch);
+        return $row === false ? null : $row;
+    }
+
+    /**
+     * 获取查询结果
+     * @param string|null $class
+     * @return array|null
+     */
+    public function fetchClass($class = null)
+    {
+        if (empty($this->rs)) {
+            return null;
+        }
+        if (!empty($class)) {
+            if (!is_subclass_of($class, Model::class)) {
+                throw new AppException(9004000003, '[' . $class . ']不是模型类!');
+            }
+        } else {
+            $class = $this->model;
+        }
+        $this->rs->setFetchMode(PDO::FETCH_CLASS, $class);
+        $row = $this->rs->fetch();
         return $row === false ? null : $row;
     }
 
     /**
      * 获取所有查询结果
+     * @param int $fetch
+     * @param mixed $arg
      * @return array
      */
-    public function fetchAll()
+    public function fetchAll($fetch = PDO::FETCH_ASSOC, $arg = null)
     {
         if (empty($this->rs)) {
             return [];
         }
-        return $this->rs->fetchAll(PDO::FETCH_ASSOC);
+        if (empty($arg)) {
+            return $this->rs->fetchAll($fetch);
+        }
+        return $this->rs->fetchAll($fetch, $arg);
     }
 
     /**
      * 获取第一个查询结果
-     * @return Model|null
+     * @return mixed
      */
     public function first()
     {
@@ -2293,9 +1878,21 @@ class QueryBuilder
      * 获取数量
      * @return int
      */
-    public function count()
+    public function count($where = null, $params = [])
     {
-        $this->execute('count(*) as cnt');
+        if (!empty($this->queries)) {
+            $cnt = 0;
+            foreach ($this->queries as $v) {
+                $cnt += $v->count();
+            }
+            return $cnt;
+        }
+        if ($where === null) {
+            [$where, $params] = $this->build();
+        }
+        $sql = 'SELECT count(*) as cnt FROM ' . $this->table . ' ' .
+            implode(' ', $this->joins) . ' ' . implode(' ', $this->leftJoins) . ' WHERE 1=1 ' . $where;
+        $this->rs = DB::execute($sql, $params);
         if (empty($this->rs)) {
             return 0;
         }
@@ -2307,42 +1904,125 @@ class QueryBuilder
     }
 
     /**
+     * 资源类
+     * @var string|null $resourceClass
+     */
+    protected $resourceClass;
+    /**
+     * 获取资源类
+     * @param string $resourceClass
+     */
+    public function setResource($resourceClass)
+    {
+        if (!is_subclass_of($resourceClass, Resource::class)) {
+            throw new AppException(9004000004, '[' . $resourceClass . ']不是资源类!');
+        }
+        $this->resourceClass = $resourceClass;
+        return $this;
+    }
+
+    /**
      * 获取所有结果
-     * @param string|null $resourceClass
+     * @param string $sql
+     * @param array $params
      * @return array
      */
-    public function get($resourceClass = null)
+    private function getList($sql, $params, $model = true)
     {
-        $this->execute($this->field, false);
+        if (!empty($this->resourceClass)) {
+            // 优先转为 Resource
+            $fetch = PDO::FETCH_CLASS;
+            $class = $this->resourceClass;
+        } elseif ($model && (!empty($this->model))) {
+            // 其次转为 Model
+            $fetch = PDO::FETCH_CLASS;
+            $class = $this->model;
+        } else {
+            // 最后转为关联数组
+            $fetch = PDO::FETCH_ASSOC;
+            $class = null;
+        }
+        if (!empty($this->key)) {
+            $fetch |= PDO::FETCH_UNIQUE;
+        }
+
+        $this->rs = DB::execute($sql, $params);
         if (empty($this->rs)) {
             return [];
         }
-        if (empty($this->model)) {
-            return $this->fetchAll();
+        return $this->fetchAll($fetch, $class);
+    }
+
+    /**
+     * 获取分页
+     * @param int $page
+     * @param int $size
+     * @param bool $model
+     * @return array
+     */
+    public function getPage($page = 1, $size = 20, $model = true)
+    {
+        [$where, $params] = $this->build();
+
+        $result = [
+            QUERY_ITEMS => [],
+            QUERY_PAGES => [
+                'perPage' => $size,
+                'total' => 0,
+                'currentPage' => 0,
+                'lastPage' => 0,
+            ],
+        ];
+
+        $count = $this->count($where, $params);
+        if ($count === 0) {
+            return $result;
         }
-        $return = [];
-        if (!empty($resourceClass) && is_subclass_of($resourceClass, Resource::class)) {
-            if (!empty($this->key)) {
-                while ($row = $this->fetch()) {
-                    $return[$row[$this->key]] = (new $resourceClass($row))->toArray();
-                }
-            } else {
-                while ($row = $this->fetch()) {
-                    $return[] = (new $resourceClass($row))->toArray();
-                }
-            }
+
+        $result[QUERY_PAGES]['total'] = $count;
+        $result[QUERY_PAGES]['lastPage'] = ceil($result[QUERY_PAGES]['total'] / $result[QUERY_PAGES]['perPage']);
+        if ($page > $result[QUERY_PAGES]['lastPage']) {
+            $page = $result[QUERY_PAGES]['lastPage'];
+        } elseif ($page < 1) {
+            $page = 1;
+        }
+        $result[QUERY_PAGES]['currentPage'] = $page;
+
+        if ($result[QUERY_PAGES]['total'] === 0) {
+            return $result;
+        }
+
+        if (!empty($this->queries)) {
+            $sql = $this->toUnionSql();
         } else {
-            if (!empty($this->key)) {
-                while ($row = $this->fetch()) {
-                    $return[$row[$this->key]] = new $this->model($row);
-                }
-            } else {
-                while ($row = $this->fetch()) {
-                    $return[] = new $this->model($row);
-                }
+            $sql = 'SELECT ' . $this->field . ' FROM ' . $this->table . ' ' .
+                implode(' ', $this->joins) . ' ' . implode(' ', $this->leftJoins) . ' WHERE 1=1 ' . $where;
+            if (!empty($this->order)) {
+                $sql .= ' ORDER BY ' . $this->order;
             }
         }
-        return $return;
+
+        $sql .= ' LIMIT ' . (($result[QUERY_PAGES]['currentPage'] - 1) * $size) . ', ' . $size;
+
+        $result[QUERY_ITEMS] = $this->getList($sql, $params, $model);
+        return $result;
+    }
+
+    /**
+     * 获取所有结果
+     * @return array|Model[]
+     */
+    public function get()
+    {
+        if (!empty($this->queries)) {
+            $sql = $this->toUnionSql();
+            $params = $this->bindings;
+        } elseif (empty($this->key)) {
+            [$sql, $params] = $this->buildExecute($this->field, false);
+        } else {
+            [$sql, $params] = $this->buildExecute($this->key . ',' . $this->field, false);
+        }
+        return $this->getList($sql, $params);
     }
 
     /**
@@ -2359,6 +2039,7 @@ class QueryBuilder
         }
         return $list;
     }
+
     /**
      * 获取所有结果的指定字段
      * @param string $field
@@ -2367,25 +2048,19 @@ class QueryBuilder
      */
     public function pluck($field, $key = null)
     {
-        $return = [];
         if (!empty($key)) {
-            $this->execute('`' . $field . '`, `' . $key . '`');
+            $this->execute('`' . $key . '`, `' . $field . '`');
             if (empty($this->rs)) {
                 return [];
             }
-            while ($row = $this->fetch()) {
-                $return[$row[$key]] = $row[$field];
-            };
+            return $this->fetchAll(PDO::FETCH_KEY_PAIR);
         } else {
             $this->execute('`' . $field . '`');
             if (empty($this->rs)) {
                 return [];
             }
-            while ($row = $this->fetch()) {
-                $return[] = $row[$field];
-            }
+            return $this->fetchAll(PDO::FETCH_COLUMN);
         }
-        return $return;
     }
     /**
      * 获取所有数组结果
@@ -2409,6 +2084,7 @@ class QueryBuilder
 }
 
 /**
+ * @id 9005
  * 模型类
  */
 class Model
@@ -2455,14 +2131,18 @@ class Model
      */
     protected $updated = [];
 
+    protected $isConstructed = false;
+
     /**
      * 构造函数
      * @param array|null $row
+     * @param string $prefix 字段前缀
      */
-    public function __construct($row = null)
+    public function __construct($row = null, $prefix = '')
     {
+        $this->isConstructed = true;
         if (!empty($row)) {
-            $this->setColumns($row);
+            $this->setColumns($row, $prefix);
         }
     }
 
@@ -2479,7 +2159,7 @@ class Model
      * 设置字段值
      * @param array $row
      */
-    protected function setColumns($row)
+    protected function setColumns($row, $prefix = '')
     {
         if (!empty(static::UNIQUE)) {
             $this->primary = [];
@@ -2487,10 +2167,11 @@ class Model
             $this->primary = null;
         }
         foreach (static::COLUMNS as $k => $v) {
-            if (!array_key_exists($v[0], $row)) {
+            $key = $prefix . $v[KEY_COLUMN];
+            if (!array_key_exists($key, $row)) {
                 continue;
             }
-            $this->columns[$k] = checkValue($v, $row[$v[0]]);
+            $this->columns[$k] = checkValue($v, $row[$key]);
             if ($k == static::PRIMARY) {
                 $this->primary = $this->columns[$k];
             } elseif (in_array($k, static::UNIQUE)) {
@@ -2515,6 +2196,9 @@ class Model
      */
     public function __get($name)
     {
+        if (!$this->isConstructed) {
+            throw new \Exception('not constructed');
+        }
         if (!array_key_exists($name, static::COLUMNS)) {
             throw new \Exception('column not found');
         }
@@ -2528,18 +2212,34 @@ class Model
      */
     public function __set($name, $value)
     {
-        if (!array_key_exists($name, static::COLUMNS)) {
-            throw new \Exception('column not found');
-        }
-        if (!array_key_exists($name, $this->columns)) {
-            $this->columns[$name] = checkValue(static::COLUMNS[$name], $value);
-        } elseif ($value !== $this->columns[$name]) {
-            if ($name == static::PRIMARY || in_array($name, static::UNIQUE)) {
-                // 不更新非空主键或唯一键字段
+        if (!$this->isConstructed) {
+            // 兼容PDO::FETCH_CLASS
+            $name = S2C[$name] ?? $name;
+            if (!array_key_exists($name, static::COLUMNS)) {
                 return;
             }
             $this->columns[$name] = checkValue(static::COLUMNS[$name], $value);
-            $this->updated[] = $name;
+            if ($name == static::PRIMARY) {
+                $this->primary = $this->columns[$name];
+            }
+        } elseif (!array_key_exists($name, static::COLUMNS)) {
+            throw new \Exception('column not found');
+        } else {
+            $value = checkValue(static::COLUMNS[$name], $value);
+
+            if (!array_key_exists($name, $this->columns)) {
+                $this->columns[$name] = $value;
+                if ($name == static::PRIMARY) {
+                    $this->primary = $this->columns[$name];
+                }
+            } elseif ($value !== $this->columns[$name]) {
+                if ($name == static::PRIMARY || in_array($name, static::UNIQUE)) {
+                    // 不更新非空主键或唯一键字段
+                    return;
+                }
+                $this->columns[$name] = $value;
+                $this->updated[] = $name;
+            }
         }
     }
 
@@ -2611,6 +2311,7 @@ class Model
     public function save()
     {
         $now = new \Time(Ypf::timestamp());
+        $this->beforeSave();
         if ((empty(static::PRIMARY) && empty(static::UNIQUE)) || empty($this->primary)) {
             // 新增
             if (!empty(static::CREATED_AT)) {
@@ -2621,10 +2322,18 @@ class Model
             }
             $arr = [];
             foreach (static::COLUMNS as $k => $v) {
-                if ($k == 'id' || !array_key_exists($k, $this->columns)) {
+                if ($k == static::PRIMARY) {
                     continue;
                 }
-                $arr[$v[0]] = $this->saveValue($v[2], $this->columns[$k]);
+                if (!array_key_exists($k, $this->columns)) {
+                    if ($v[KEY_DEFAULT] === null) {
+                        throw new AppException(9005000001, $v[KEY_NAME] . '不能为空');
+                    } elseif ($v[KEY_DEFAULT] != 'nullable') {
+                        $arr[$v[KEY_COLUMN]] = $v[KEY_DEFAULT] ?? null;
+                    }
+                } else {
+                    $arr[$v[KEY_COLUMN]] = $this->saveValue($v[KEY_TYPE], $this->columns[$k]);
+                }
             }
             DB::insert(static::TABLE, $arr);
             if (static::PRIMARY == 'id') {
@@ -2647,6 +2356,11 @@ class Model
             }
             if (!empty(static::UPDATED_AT)) {
                 $arr[static::COLUMNS[static::UPDATED_AT][0]] = $now;
+            }
+            if (!empty($this->creased)) {
+                foreach ($this->creased as $k => $v) {
+                    $arr[$k] = $v;
+                }
             }
             $where = [];
             if (!empty(static::PRIMARY)) {
@@ -2673,6 +2387,7 @@ class Model
         if (empty($this->primary)) {
             throw new \Exception('primary is empty');
         }
+        $this->beforeDelete();
         $where = [];
         if (!empty(static::PRIMARY)) {
             $primary = $this->primary;
@@ -2692,6 +2407,48 @@ class Model
             date('Y-m-d H:i:s', Ypf::timestamp()),
         ]);
         DB::delete(static::TABLE, $where);
+    }
+
+    /**
+     * 保存前调用
+     */
+    protected function beforeSave()
+    {
+    }
+
+    /**
+     * 删除前调用
+     */
+    protected function beforeDelete()
+    {
+    }
+
+    protected $creased = [];
+
+    /**
+     * 增加字段值
+     * @param string $field 字段名
+     * @param int $value 增加值
+     */
+    public function increase($field, $value)
+    {
+        if (!array_key_exists($field, static::COLUMNS)) {
+            throw new \Exception('field not found');
+        }
+        $this->creased[static::COLUMNS[$field][0]] = ['increase', intval($value)];
+    }
+
+    /**
+     * 减少字段值
+     * @param string $field 字段名
+     * @param int $value 减少值
+     */
+    public function decrease($field, $value)
+    {
+        if (!array_key_exists($field, static::COLUMNS)) {
+            throw new \Exception('field not found');
+        }
+        $this->creased[static::COLUMNS[$field][0]] = ['decrease', intval($value)];
     }
 
     /**
@@ -2740,6 +2497,7 @@ class Model
 }
 
 /**
+ * @id 9006
  * 资源类
  */
 class Resource
@@ -2754,30 +2512,51 @@ class Resource
      */
     protected $attrs = [];
 
+    protected $isConstruct = false;
+
     /**
      * 构造函数
-     * @param array|Model $row
+     * @param array|Model|null $row
      */
-    public function __construct($row)
+    public function __construct($row = null)
     {
-        if (is_array($row)) {
-            foreach (static::COLUMNS as $k => $v) {
-                if (array_key_exists($v[0], $row)) {
-                    $this->attrs[$k] = checkValue($v, $row[$v[0]]);
-                } else {
-                    $this->attrs[$k] = null;
+        $this->isConstruct = true;
+        if ($row != null) {
+            if (is_array($row)) {
+                foreach (static::COLUMNS as $k => $v) {
+                    if (array_key_exists($v[KEY_COLUMN], $row)) {
+                        $this->attrs[$k] = checkValue($v, $row[$v[KEY_COLUMN]]);
+                    } else {
+                        $this->attrs[$k] = null;
+                    }
                 }
-            }
-        } elseif ($row instanceof Model) {
-            foreach (static::COLUMNS as $k => $v) {
-                if (array_key_exists($k, $row::COLUMNS)) {
-                    $this->attrs[$k] = checkValue($v, $row->$k);
-                } else {
-                    $this->attrs[$k] = null;
+            } elseif ($row instanceof Model) {
+                foreach (static::COLUMNS as $k => $v) {
+                    if (array_key_exists($k, $row::COLUMNS)) {
+                        $this->attrs[$k] = checkValue($v, $row->$k);
+                    } else {
+                        $this->attrs[$k] = null;
+                    }
                 }
             }
         }
         $this->handle();
+    }
+
+    /**
+     * 设置属性值
+     * @param string $name 属性名
+     * @param mixed $value 属性值
+     */
+    public function __set($name, $value)
+    {
+        if (!$this->isConstruct) {
+            $name = snakeToCamel($name, false);
+        }
+        if (!array_key_exists($name, static::COLUMNS)) {
+            return;
+        }
+        $this->attrs[$name] = checkValue(static::COLUMNS[$name], $value);
     }
 
     /**
@@ -2798,6 +2577,490 @@ class Resource
 }
 
 /**
+ * @id 9007
+ * 数据
+ */
+class Data
+{
+    /**
+     * 请求参数
+     * @var array
+     */
+    public const REQ = [];
+    /**
+     * 响应参数
+     * @var array
+     */
+    public const RESP = [];
+    /**
+     * 每页数量
+     * @var int
+     */
+    public const PRE_PAGE = 0;
+
+    /**
+     * 请求参数
+     * @var array
+     */
+    protected $input = [];
+    /**
+     * 响应参数
+     * @var array
+     */
+    protected $output = [];
+    /**
+     * 扩展属性
+     * @var array
+     */
+    protected $attrs = [];
+    /**
+     * 响应
+     * @var array
+     */
+    protected $resp = [];
+    /**
+     * 是否分页
+     * @var bool
+     */
+    protected $isPaginated = false;
+    /**
+     * 请求
+     * @var Request
+     */
+    protected $request;
+
+    public function __construct()
+    {
+        $this->input = fcheck(static::REQ);
+        $this->output = fcheck(static::RESP);
+    }
+
+    /**
+     * 获取请求
+     * @return Request
+     */
+    public function request()
+    {
+        return $this->request;
+    }
+
+    /**
+     * 获取响应
+     * @return array
+     */
+    public function resp()
+    {
+        $resp = [];
+        foreach ($this->output as $k => $v) {
+            if (array_key_exists($k, $this->resp)) {
+                $resp[$k] = $this->getValue($v->type, $this->resp[$k], $v->name);
+            } elseif (!empty($v->default)) {
+                $resp[$k] = $v->default;
+            } else {
+                throw new Exception($v->name . '不能为空');
+            }
+        }
+        return $resp;
+    }
+
+    /**
+     * 检查扩展属性是否存在
+     * @param string $key
+     * @return bool
+     */
+    public function has($key)
+    {
+        return array_key_exists($key, $this->attrs);
+    }
+
+    /**
+     * 获取属性
+     * @param string $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public function get($key, $default = null)
+    {
+        return $this->attrs[$key] ?? $default;
+    }
+
+    /**
+     * 设置属性
+     * @param string $key
+     * @param mixed $value
+     */
+    public function set($key, $value)
+    {
+        $this->resp[$key] = $value;
+    }
+
+    /**
+     * 使用数组设置属性
+     * @param array $array
+     */
+    public function setArray($array)
+    {
+        foreach ($array as $k => $v) {
+            $this->set($k, $v);
+        }
+    }
+
+    /**
+     * 传递属性
+     * @param string $key
+     */
+    public function pass($key)
+    {
+        if (!isset($this->input[$key])) {
+            throw new Exception($key . '未定义');
+        }
+        if (!array_key_exists($key, $this->attrs)) {
+            throw new Exception($key . '未传入');
+        }
+        $this->resp[$key] = $this->attrs[$key];
+    }
+
+    /**
+     * 初始化
+     */
+    public function init()
+    {
+        $this->request = Context::getRequest();
+        $this->attrs = $this->initAttrs($this->input, $this->request->attrs());
+    }
+
+    /**
+     * 初始化属性
+     * @param array $input
+     * @param array $attrs
+     * @return array
+     */
+    protected function initAttrs($input, $attrs)
+    {
+        $arr = [];
+        foreach ($input as $k => $v) {
+            if ($v instanceof Field) {
+                if (!array_key_exists($k, $attrs)) {
+                    if ($v->required) {
+                        throw new Exception($v->name . '不能为空');
+                    }
+                    continue;
+                }
+                $arr[$k] = $this->getValue($v->type, $attrs[$k], $v->name);
+            } elseif (is_array($v)) {
+                if (!array_key_exists($k, $attrs)) {
+                    if ($v['required']) {
+                        throw new Exception($v['name'] . '不能为空');
+                    }
+                    continue;
+                }
+                if (empty($v['children'])) {
+                    $arr[$k] = $attrs[$k];
+                } elseif ($v['format'] == null) {
+                    $arr[$k] = $this->initAttrs($v['children'], $attrs[$k]);
+                } elseif ($v['format'] == 'array' && is_array($attrs[$k])) {
+                    foreach ($attrs[$k] as $kk => $vv) {
+                        $arr[$k][$kk] = $this->initAttrs($v['children'], $vv);
+                    }
+                }
+            }
+        }
+        return $arr;
+    }
+
+    /**
+     * 获取当前时间
+     * @return int
+     */
+    public function now()
+    {
+        if (!empty($this->request)) {
+            return $this->request->requestTime();
+        }
+        return time();
+    }
+
+    /**
+     * 检查字段配置
+     * @param array $config
+     * @param array $return
+     */
+    protected function checkField($config, &$return)
+    {
+        foreach ($config as $v) {
+            switch ($v) {
+                case 'required':
+                    $return['required'] = true;
+                    break;
+                default:
+                    $tmp = explode(':', $v);
+                    switch ($tmp[0]) {
+                        case 'default':
+                            if (!empty($tmp[1])) {
+                                $return['default'] = $tmp[1];
+                            }
+                            break;
+                    }
+                    break;
+            }
+        }
+    }
+
+    /**
+     * 获取属性值
+     * @param string $type
+     * @param mixed $v
+     * @param string $name
+     * @return mixed
+     */
+    protected function getValue($type, $v, $name)
+    {
+        $tmp = explode('|', $type);
+        $type = $tmp[0];
+        $subType = $tmp[1] ?? null;
+        switch ($type) {
+            case 'int':
+                return intval($v);
+            case 'float':
+                return floatval($v);
+            case 'Time':
+                return empty($v) ? null : (is_string($v) ? $v : $v->toString());
+            case 'array':
+                if (!is_array($v) && $v !== null) {
+                    throw new AppException(9010010001, $name . '必须是数组');
+                }
+
+                switch ($subType) {
+                    case 'int':
+                        return array_map('intval', $v);
+                    case 'float':
+                        return array_map('floatval', $v);
+                    default:
+                        return $v;
+                }
+            default:
+                return $v;
+        }
+    }
+
+    /**
+     * 获取文档
+     * @return array
+     */
+    public function getDoc()
+    {
+        $doc = [
+            'request' => [],
+            'response' => [],
+        ];
+        foreach ($this->input as $k=>$v) {
+            $doc['request'][] = [
+                'field' => $k,
+                'name' => $v->name,
+                'type' => $v->type,
+                'required' => $v->required,
+                'default' => $v->default,
+                'validate' => $v->validate,
+            ];
+        }
+        foreach ($this->output as $k=>$v) {
+            $doc['response'][] = [
+                'field' => $k,
+                'name' => $v->name,
+                'type' => $v->type,
+                'default' => $v->default,
+            ];
+        }
+
+        return $doc;
+    }
+}
+
+/**
+ * @id 9008
+ * 认证中间件
+ */
+abstract class AuthMiddleware
+{
+    /**
+     * 过期时间，单位秒
+     * @var int
+     */
+    protected $timeout = 1800;
+
+    /**
+     * 应用id
+     * @var int
+     */
+    protected $appId = 0;
+    /**
+     * 请求
+     * @var Request
+     */
+    protected $request;
+
+    /**
+     * 用户名
+     * @var string
+     */
+    protected $username = 'username';
+    /**
+     * 密码
+     * @var string
+     */
+    protected $password = 'password';
+    /**
+     * 加密方式
+     * @var string
+     */
+    protected $encrypt = 'md5';
+    /**
+     * 用户id
+     * @var int
+     */
+    protected $userId = 0;
+    /**
+     * 令牌id
+     * @var int
+     */
+    protected $tokenId = 0;
+    /**
+     * 令牌
+     * @var string
+     */
+    protected $token = '';
+    /**
+     * 角色
+     * @var array
+     */
+    protected $roles = [];
+    /**
+     * 扩展属性
+     * @var array
+     */
+    protected $attrs = [];
+
+    /**
+     * 构造函数
+     * @param int $appId 应用id
+     */
+    public function __construct($appId = 0)
+    {
+        $this->request = Context::getRequest();
+        $this->appId = $appId;
+    }
+
+    /**
+     * 获取角色
+     * @return array
+     */
+    public function roles()
+    {
+        return $this->roles;
+    }
+
+    /**
+     * 获取用户id
+     * @return int
+     */
+    public function userId()
+    {
+        return $this->userId;
+    }
+
+    /**
+     * 获取令牌
+     * @return string
+     */
+    public function token()
+    {
+        return $this->token;
+    }
+
+    /**
+     * 获取扩展属性
+     * @param string $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public function extra($key, $default = null)
+    {
+        return $this->attrs[$key] ?? $default;
+    }
+
+    /**
+     * 检查认证
+     * @param int $apiId
+     * @return bool
+     */
+    abstract public function checkAuth($apiId);
+
+    /**
+     * 检查登录
+     * @return void
+     */
+    abstract public function checkLogin();
+
+    /**
+     * 退出登录
+     * @return void
+     */
+    abstract public function logout();
+
+    /**
+     * 获取令牌
+     * @param int $id
+     * @param int $expiresIn
+     * @return array
+     */
+    abstract public function getToken($id, $expiresIn = 86400);
+
+    /**
+     * 获取用户
+     * @return mixed
+     */
+    abstract public function getUser();
+
+    /**
+     * 生成密码哈希
+     * @param string $password
+     * @return string
+     */
+    abstract public function makePassword($password);
+
+    /**
+     * 验证密码哈希
+     * @param string $password
+     * @param string $hashPassword
+     * @return bool
+     */
+    abstract public function verifyPassword($password, $hashPassword);
+}
+
+/**
+ * @id 9009
+ * 控制器
+ */
+class Controller
+{
+    public const SERVICE = '';
+
+    public function __construct()
+    {
+        $this->init();
+    }
+
+    /**
+     * 初始化
+     */
+    protected function init()
+    {
+
+    }
+}
+
+/**
+ * @id 9010
  * 服务类
  */
 class Service
@@ -2836,6 +3099,7 @@ class Service
 }
 
 /**
+ * @id 9011
  * RESTful服务类
  */
 class RestfulService extends Service
@@ -2906,15 +3170,15 @@ class RestfulService extends Service
         parent::__construct();
 
         if (empty(static::$model)) {
-            throw new AppException(9005000001, 'model is empty');
+            throw new AppException(9011000001, 'model is empty');
         }
         if (!is_subclass_of(static::$model, Model::class)) {
-            throw new AppException(9005000002, 'model must be subclass of Model');
+            throw new AppException(9011000002, 'model must be subclass of Model');
         }
         if (!empty(static::$headerId)) {
             foreach (static::$headerId as $k => $v) {
                 if (!$this->request->hasHeader($k)) {
-                    throw new AppException(9005000003);
+                    throw new AppException(9011000003);
                 }
             }
         }
@@ -2928,7 +3192,7 @@ class RestfulService extends Service
     {
         $info = static::$model::find($this->request->get('id'));
         if (!$info) {
-            throw new AppException(9005000004, '指定的记录不存在');
+            throw new AppException(9011000004, '指定的记录不存在');
         }
         if (!empty(static::$headerId)) {
             foreach (static::$headerId as $k => $v) {
@@ -2937,10 +3201,10 @@ class RestfulService extends Service
                 }
                 if (is_array($info->$v)) {
                     if (!in_array($this->request->header($k), $info->$v)) {
-                        throw new AppException(9005000005, '系统异常');
+                        throw new AppException(9011000005, '系统异常');
                     }
                 } elseif ($info->$v != $this->request->header($k)) {
-                    throw new AppException(9005000006, '系统异常');
+                    throw new AppException(9011000006, '系统异常');
                 }
             }
         }
@@ -2963,7 +3227,7 @@ class RestfulService extends Service
                     continue;
                 }
                 if (!$request->has($v[0]) && in_array('required', $v)) {
-                    throw new AppException(9005010001, '参数' . $v[1] . '不能为空');
+                    throw new AppException(9011010001, '参数' . $v[1] . '不能为空');
                 }
                 $dbField = $model::COLUMNS[$v[0]][0];
                 if (empty($v[3])) {
@@ -3026,7 +3290,10 @@ class RestfulService extends Service
             }
         }
         $this->beforeIndex($query);
-        $query->primaryOrder();
+
+        if ($query instanceof QueryBuilder) {
+            $query->primaryOrder();
+        }
 
         if (!static::$hasPage) {
             $pages = $query->all();
@@ -3095,6 +3362,26 @@ class RestfulService extends Service
     }
 
     /**
+     * 填充资源
+     * @param array $resource
+     * @param Model $model
+     * @param array $fields
+     */
+    public function fill($resource, $model, $fields)
+    {
+        if (!is_subclass_of($model, Model::class)) {
+            throw new AppException(9011000015, '模型类必须继承自Model');
+        }
+        foreach ($model::COLUMNS as $k=>$v) {
+            if (!in_array($v[0], $fields)) {
+                continue;
+            }
+            $resource[$k] = $model->$k;
+        }
+        return $resource;
+    }
+
+    /**
      * 获取参数
      * @param Request $request
      * @param array $v
@@ -3104,19 +3391,19 @@ class RestfulService extends Service
     {
         if (!$request->has($v[0])) {
             if (array_key_exists(3, $v) && $v[3] === null) {
-                throw new AppException(9005000011, '参数' . $v[1] . '不能为空');
+                throw new AppException(9011000011, '参数' . $v[1] . '不能为空');
             }
             return null;
         }
         $value = $request->get($v[0]);
         if (!empty($v[4]) && is_array($v[4]) && !in_array($value, $v[4])) {
-            throw new AppException(9005000012, '参数' . $v[1] . '的值' . $value . '不在' . implode(',', $v[4]) . '中');
+            throw new AppException(9011000012, '参数' . $v[1] . '的值' . $value . '不在' . implode(',', $v[4]) . '中');
         }
-        if (is_array($v[2])) {
+        if (is_array($v[2]) && !empty($value)) {
             foreach ($value as &$vv) {
                 foreach ($v[2] as $f) {
                     if (!array_key_exists($f[0], $vv) && array_key_exists(3, $f) && $f[3] === null) {
-                        throw new AppException(9005000013, '参数' . $f[1] . '不能为空');
+                        throw new AppException(9011000013, '参数' . $f[1] . '不能为空');
                     }
                 }
             }
@@ -3149,7 +3436,7 @@ class RestfulService extends Service
                 $query->where(static::$model::COLUMNS[$k][0], $validated[$k]);
             }
             if ($query->count() > 0) {
-                throw new AppException(9005030005, implode(',', $uniqueName) . '的数据已存在');
+                throw new AppException(9011030005, implode(',', $uniqueName) . '的数据已存在');
             }
         }
         if (!empty(static::$headerId)) {
@@ -3212,7 +3499,7 @@ class RestfulService extends Service
                 }
             }
             if ($query->count() > 0) {
-                throw new AppException(9005040005, implode(',', $uniqueName) . '的数据已存在');
+                throw new AppException(9011040005, implode(',', $uniqueName) . '的数据已存在');
             }
         }
         DB::beginTransaction();
@@ -3233,7 +3520,7 @@ class RestfulService extends Service
     public function destroy()
     {
         if (!static::$delete) {
-            throw new AppException(9005050001, '删除操作被禁用');
+            throw new AppException(9011050001, '删除操作被禁用');
         }
         $info = $this->getInfo();
         DB::beginTransaction();
@@ -3347,6 +3634,81 @@ class RestfulService extends Service
 }
 
 /**
+ * @id 9012
+ * 命令
+ */
+abstract class Command
+{
+    /**
+     * 命令参数
+     * @var array
+     */
+    protected $args = [];
+    /**
+     * 命令参数
+     * @var array
+     */
+    protected $argv = [];
+    /**
+     * 创建别名
+     * @var array
+     */
+    protected $alias = [];
+
+    /**
+     * 构造函数
+     * @param array $args
+     * @param array $argv
+     */
+    public function __construct($args = [], $argv = [])
+    {
+        $this->args = $args;
+        $this->argv = $argv;
+    }
+
+    /**
+     * 处理命令
+     * @return void
+     */
+    public function handle()
+    {
+        if (isset($this->args['command'])) {
+            $command = $this->alias[$this->args['command']] ?? $this->args['command'];
+        } elseif (isset($this->args['c'])) {
+            $command = $this->alias[$this->args['c']] ?? $this->args['c'];
+        } else {
+            echo '请输入命令', "\n";
+            exit;
+        }
+        if (!method_exists($this, $command)) {
+            throw new Exception($command . '不存在');
+        }
+        $this->$command();
+        echo '操作完成', "\n";
+    }
+
+    /**
+     * 获取参数
+     * @param array $keys
+     * @return array
+     */
+    protected function getArgv($keys)
+    {
+        if (count($keys) != count($this->argv)) {
+            throw new Exception('参数格式错误: ' . implode(' ', $keys));
+        }
+        $argv = [];
+        foreach ($keys as $k => $v) {
+            if (array_key_exists($k, $this->argv)) {
+                $argv[$v] = $this->argv[$k];
+            }
+        }
+        return $argv;
+    }
+}
+
+/**
+ * @id 9013
  * 缓存类
  */
 class Cache
@@ -3376,59 +3738,7 @@ class Cache
 }
 
 /**
- * 打印变量
- * @param mixed $expression
- * @return string
- */
-function var_output($expression) {
-    $export = var_export($expression, TRUE);
-    $export = preg_replace("/^([ ]*)(.*)/m", '$1$1$2', $export);
-    $array = preg_split("/\r\n|\n|\r/", $export);
-    $array = preg_replace(["/\s*array\s\($/", "/\)(,)?$/", "/\s=>\s$/"], [NULL, ']$1', ' => ['], $array);
-    $export = join("\n", array_filter(["["] + $array));
-    return $export;
-}
-
-if (!function_exists('str_contains')) {
-    /**
-     * 字符串是否包含子字符串
-     * @param string $haystack
-     * @param string $needle
-     * @return bool
-     */
-    function str_contains($haystack, $needle)
-    {
-        return $needle === '' || strpos($haystack, $needle) !== false;
-    }
-}
-
-if (!function_exists('str_starts_with')) {
-    /**
-     * 字符串是否以子字符串开头
-     * @param string $haystack
-     * @param string $needle
-     * @return bool
-     */
-    function str_starts_with($haystack, $needle)
-    {
-        return $needle === '' || strncmp($haystack, $needle, strlen($needle)) === 0;
-    }
-}
-
-if (!function_exists('str_ends_with')) {
-    /**
-     * 字符串是否以子字符串结尾
-     * @param string $haystack
-     * @param string $needle
-     * @return bool
-     */
-    function str_ends_with($haystack, $needle)
-    {
-        return $needle === '' || substr($haystack, -strlen($needle)) === $needle;
-    }
-}
-
-/**
+ * @id 9014
  * 字段类
  */
 class Field
@@ -3494,232 +3804,7 @@ class Field
 }
 
 /**
- * 校验表单字段
- * @param array $arr
- * @return array
- */
-function fcheck($arr)
-{
-    if (empty($arr)) {
-        return [];
-    }
-    $a = [];
-    foreach ($arr as $k=>$v) {
-        if (empty($v[2])) {
-            $v[2] = 'string';
-        }
-        if (!array_key_exists(3, $v)) {
-            $v[3] = 'nullable';
-        }
-        if (is_numeric($k)) {
-            $k = $v[0];
-        }
-        if (is_array($v[2])) {
-            if (is_string($v[2][0]) && is_array($v[2][1])) {
-                if (!is_subclass_of($v[2][0], Model::class)) {
-                    throw new Exception($v[2][0] . '不是模型类');
-                }
-                if (empty($v[0])) {
-                    $tmp = &$a;
-                } else {
-                    $a[$k] = [
-                        'name' => $v[1],
-                        'children' => [],
-                        'required' => $v[3] === null,
-                    ];
-                    $tmp = &$a[$k]['children'];
-                }
-                foreach ($v[2][0]::COLUMNS as $kc=>$vc) {
-                    if (in_array($kc, $v[2][1]) || $kc == 'deleted_at') {
-                        continue;
-                    }
-                    $tmp[$kc] = new Field($vc[0], $vc[1], $vc[2], $v[3] ?? null);
-                }
-            } else {
-                $a[$k] = [
-                    'name' => $v[1],
-                    'children' => fcheck($v[2]),
-                    'required' => $v[3] === null,
-                    'format' => $v[4] ?? null,
-                ];
-            }
-        } else {
-            $a[$k] = new Field($v[0], $v[1], $v[2], $v[3] ?? null, $v[4] ?? null, $v[5] ?? null);
-        }
-    }
-    return $a;
-}
-
-/**
- * 打印数据
- * @param mixed $data
- * @param bool $exit
- */
-function d($data, $exit = false)
-{
-    if (is_object($data) || is_array($data)) {
-        echo json($data), "\n";
-    } else {
-        echo $data, "\n";
-    }
-    if ($exit) {
-        exit;
-    }
-}
-
-/**
- * 校验值
- * @param array $column
- * @param mixed $v
- * @return mixed
- */
-function checkValue($column, $v)
-{
-    if ($v === null) {
-        if (!in_array('nullable', $column)) {
-            throw new \Exception($column[1] . '不能为空');
-        }
-        return null;
-    }
-    $tmp = explode('|', $column[2]);
-    $type = $tmp[0];
-    switch ($type) {
-        case 'int':
-            return intval($v);
-        case 'float':
-            return floatval($v);
-        case 'Date':
-            return new \Time($v, 'Y-m-d');
-        case 'Time':
-        case 'DateTime':
-            return new \Time($v);
-        case 'array':
-            if (!is_array($v)) {
-                $v = json_decode($v, true);
-            }
-            return $v;
-        case 'string':
-            return strval($v);
-        default:
-            return $v;
-    }
-}
-
-/**
- * 获取存储路径
- * @param string $path
- * @return string
- */
-function storage_path($path)
-{
-    return APP_PATH . '/storage/' . $path;
-}
-
-/**
- * 获取公共路径
- * @param string $path
- * @return string
- */
-function public_path($path)
-{
-    return APP_PATH . '/public/' . $path;
-}
-
-/**
- * 获取日志路径
- * @param string $path
- * @return string
- */
-function log_path($path)
-{
-    return storage_path('logs/' . $path);
-}
-
-/**
- * 转换为JSON字符串
- * @param mixed $data
- * @return string
- */
-function json($data)
-{
-    return json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-}
-
-/**
- * 生成UUID
- * @param bool $min
- * @return string
- */
-function uuid($prefix = '', $min = true) {
-    $data = random_bytes(16);
-    $data[6] = chr(ord($data[6]) & 0x0f | 0x40); // set version to 0100
-    $data[8] = chr(ord($data[8]) & 0x3f | 0x80); // set bits 6-7 to 10
-    return $prefix . vsprintf($min ? '%s%s%s%s%s%s%s%s' : '%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
-}
-
-/**
- * 授权：无
- */
-const ACL_NON = 0;
-/**
- * 授权：登录
- */
-const ACL_LOGIN = 1;
-/**
- * 授权：认证
- */
-const ACL_AUTH = 2;
-
-/**
- * 常量类
- */
-class Consts
-{
-    /**
-     * 禁用
-     */
-    public const DISABLED = 0;
-    /**
-     * 启用
-     */
-    public const ENABLED = 1;
-    /**
-     * 离线
-     */
-    public const OFFLINE = 0;
-    /**
-     * 在线
-     */
-    public const ONLINE = 1;
-
-    /**
-     * 关闭
-     */
-    public const OFF = 0;
-    /**
-     * 开启
-     */
-    public const ON = 1;
-
-    /**
-     * 审核中
-     */
-    public const REVIEW_PENDING = 0;
-    /**
-     * 审核通过
-     */
-    public const REVIEW_APPROVED = 1;
-    /**
-     * 审核拒绝
-     */
-    public const REVIEW_REJECTED = 2;
-    /**
-     * 审核撤销
-     */
-    public const REVIEW_CANCELED = 3;
-}
-
-/**
+ * @id 9015
  * 时间类
  */
 class Time
@@ -3729,11 +3814,7 @@ class Time
      * @var int|null
      */
     private $timestamp;
-    /**
-     * 时间字符串
-     * @var string|null
-     */
-    private $timeStr;
+
     /**
      * 时间格式
      * @var string
@@ -3749,13 +3830,10 @@ class Time
     {
         if (empty($time)) {
             $this->timestamp = null;
-            $this->timeStr = null;
         } elseif (is_int($time)) {
             $this->timestamp = $time;
-            $this->timeStr = date($format, $time);
         } else {
             $this->timestamp = strtotime($time);
-            $this->timeStr = date($format, $this->timestamp);
         }
         $this->format = $format;
     }
@@ -3775,17 +3853,36 @@ class Time
      */
     public function toString()
     {
-        return $this->timeStr;
+        return empty($this->timestamp) ? null : date($this->format, $this->timestamp);
     }
 
     /**
      * 添加天数
      * @param int $days
-     * @return string|null
+     * @param bool $new 是否返回新实例
+     * @return static
      */
-    public function addDays($days = 1)
+    public function addDays($days = 1, $new = false)
     {
-        return date($this->format, $this->timestamp + $days * 86400);
+        if ($new) {
+            $t = clone $this;
+        } else {
+            $t = $this;
+        }
+        if ($days > 0) {
+            $t->timestamp += $days * 86400;
+        }
+        return $t;
+    }
+
+    /**
+     * 计算时间差
+     * @param Time|string $time
+     * @return int|null
+     */
+    public function diffInDays($time)
+    {
+        return ceil(($this->timestamp - (is_subclass_of($time, self::class) ? $time->timestamp() : strtotime($time))) / 86400);
     }
 
     /**
@@ -3794,11 +3891,12 @@ class Time
      */
     public function __toString()
     {
-        return $this->timeStr;
+        return $this->toString();
     }
 }
 
 /**
+ * @id 9016
  * 日志类
  */
 class Logger
@@ -3848,6 +3946,7 @@ class Logger
 }
 
 /**
+ * @id 9017
  * 上下文类
  */
 class Context
@@ -3877,6 +3976,14 @@ class Context
     public static function now()
     {
         return self::get('now');
+    }
+
+    /**
+     * @return Time|null
+     */
+    public static function today()
+    {
+        return self::get('today');
     }
 
     /**
@@ -3920,6 +4027,10 @@ class Context
     }
 }
 
+/**
+ * @id 9018
+ * 字符串类
+ */
 class Str
 {
     /**
@@ -3949,7 +4060,7 @@ class Str
      * @param string $data
      * @return string
      */
-    public static function urlEncode($data)
+    public static function base64UrlEncode($data)
     {
         return rtrim(strtr(base64_encode($data), ['+' => '-', '/' => '_']), '=');
     }
@@ -3959,7 +4070,7 @@ class Str
      * @param string $data
      * @return string|null
      */
-    public static function urlDecode($data)
+    public static function base64UrlDecode($data)
     {
         $padding = 4 - (strlen($data) % 4);
         if ($padding !== 4) {
@@ -3976,7 +4087,7 @@ class Str
      */
     public static function randomString($size)
     {
-        return self::urlEncode(random_bytes((int) ceil($size * 6 / 8)));
+        return self::base64UrlEncode(random_bytes((int) ceil($size * 6 / 8)));
     }
 
     /**
@@ -4126,6 +4237,10 @@ class Str
     }
 }
 
+/**
+ * @id 9019
+ * 数组类
+ */
 class Arr
 {
     /**
@@ -4148,6 +4263,10 @@ class Arr
     }
 }
 
+/**
+ * @id 9020
+ * 哈希类
+ */
 class Hash
 {
     /**
@@ -4169,7 +4288,7 @@ class Hash
         ]);
 
         if ($hash === false) {
-            throw new AppException(8001010001, 'Bcrypt hashing not supported.');
+            throw new AppException(9020000001, 'Bcrypt hashing not supported.');
         }
 
         return $hash;
@@ -4189,4 +4308,732 @@ class Hash
 
         return password_verify($value, $hashedValue);
     }
+}
+
+/**
+ * @id 9021
+ * 日期类
+ */
+class Date
+{
+    /**
+     * 增加年份
+     * @param string|int $date
+     * @param int $year 增加的年份
+     * @param string|null $format
+     * @return string|int
+     */
+    public static function addYear($date, $year = 1, $format = 'Y-m-d H:i:s')
+    {
+        if (is_string($date)) {
+            $str = true;
+            $date = strtotime($date);
+        } else {
+            $str = false;
+        }
+        $y = date('Y', $date) + $year;
+        $m = date('n', $date);
+        $d = date('j', $date);
+        $h = date('H', $date);
+        $i = date('i', $date);
+        $s = date('s', $date);
+        $date = mktime($h, $i, $s, $m, $d, $y);
+        return $str ? date($format, $date) : $date;
+    }
+
+    /**
+     * 获取下一个月的同一天
+     * @param string|int $date
+     * @param string|null $format
+     * @return string|int
+     */
+    public static function nextMonth($date, $format = 'Y-m-d H:i:s')
+    {
+        if (is_string($date)) {
+            $str = true;
+            $date = strtotime($date);
+        } else {
+            $str = false;
+        }
+        $t = date('t', strtotime($date));
+        $date += $t * 86400;
+        return $str ? date($format, $date) : $date;
+    }
+
+    /**
+     * 增加月份
+     * @param string|int $date
+     * @param int $month 增加的月份数
+     * @param int|null $day 目标日期的天数
+     * @param string|null $format
+     * @return string|int
+     */
+    public static function addMonth($date, $month = 1, $day = null, $format = 'Y-m-d H:i:s')
+    {
+        if (is_string($date)) {
+            $str = true;
+            $date = strtotime($date);
+        } else {
+            $str = false;
+        }
+        $y = date('Y', $date);
+        $m = date('n', $date);
+        if (empty($day)) {
+            $d = date('j', $date);
+        } else {
+            $d = $day;
+        }
+        $h = date('H', $date);
+        $i = date('i', $date);
+        $s = date('s', $date);
+        $m += $month;
+        if ($m > 12) {
+            $y1 = floor($m / 12);
+            $y += $y1;
+            $m -= $y1 * 12;
+        }
+        $date = mktime($h, $i, $s, $m, $d, $y);
+        return $str ? date($format, $date) : $date;
+    }
+
+    /**
+     * 增加天数
+     * @param string|int $date
+     * @param int $day 增加的天数
+     * @param string|null $format
+     * @return string|int
+     */
+    public static function addDay($date, $day = 1, $format = 'Y-m-d H:i:s')
+    {
+        if (is_string($date)) {
+            $str = true;
+            $date = strtotime($date);
+        } else {
+            $str = false;
+        }
+        $date += $day * 86400;
+        return $str ? date($format, $date) : $date;
+    }
+
+    /**
+     * 增加周数
+     * @param string|int $date
+     * @param string|null $format
+     * @return string|int
+     */
+    public static function addWeek($date, $format = 'Y-m-d H:i:s')
+    {
+        if (is_string($date)) {
+            $str = true;
+            $date = strtotime($date);
+        } else {
+            $str = false;
+        }
+        $date += 604800;
+        return $str ? date($format, $date) : $date;
+    }
+
+    /**
+     * 获取日期的开始时间戳
+     * @param string|int $date
+     * @return string|int
+     */
+    public static function start($date)
+    {
+        if (is_string($date)) {
+            return strtotime(substr($date, 0, 10));
+        } else {
+            return strtotime('today', $date);
+        }
+    }
+
+    /**
+     * 获取日期的结束时间戳
+     * @param string|int $date
+     * @return string|int
+     */
+    public static function end($date)
+    {
+        if (is_string($date)) {
+            return strtotime(substr($date, 0, 10) . ' 23:59:59');
+        } else {
+            return strtotime('tomorrow', $date) - 1;
+        }
+    }
+}
+
+/**
+ * @id 9022
+ * JWT 类
+ */
+class JWT
+{
+    /**
+     * @var int $leeway 时间偏移容忍度（秒）默认值为 0
+     */
+    public static $leeway = 0;
+
+    /**
+     * 签发 Token，支持注入 7 大标准声明与 kid
+     *
+     * @param array  $payload 载荷
+     * @param string $key     私钥(RS256) 或 密钥(HS256)
+     * @param string $alg     算法 (默认 RS256)
+     * @param string|null $keyId 密钥ID (用于 JWKS)
+     * @return string JWT 字符串
+     */
+    public static function encode($payload, $key, $alg = 'RS256', $keyId = null)
+    {
+        $header = ['typ' => 'JWT', 'alg' => $alg];
+        if ($keyId !== null) {
+            $header['kid'] = $keyId;
+        }
+
+        $base64UrlHeader = Str::base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE));
+        $base64UrlPayload = Str::base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $signingInput = $base64UrlHeader . '.' . $base64UrlPayload;
+
+        $signature = self::sign($signingInput, $key, $alg);
+
+        return $signingInput . '.' . Str::base64UrlEncode($signature);
+    }
+
+    /**
+     * 验证 Token（完全支持 JWKS、多算法白名单、Leeway 与受众验证）
+     *
+     * @param string $jwt
+     * @param string|array $keys 允许的密钥集 (JWKS 的 key => PEM 映射，或单密钥)
+     * @param array  $allowedAlgs 允许的算法白名单（必须指定，防御算法混乱攻击）
+     * @param string|null $expectedIss 期望的签发者
+     * @param string|null $expectedAud 期望的受众
+     * @return array 有效载荷 (包含用户信息)
+     */
+    public static function decode($jwt, $keys, $allowedAlgs = ['RS256'], $expectedIss = null, $expectedAud = null)
+    {
+        $segments = explode('.', $jwt);
+        if (count($segments) !== 3) {
+            throw new AppException(9022020001, "非法 JWT 格式");
+        }
+
+        [$base64UrlHeader, $base64UrlPayload, $base64UrlSignature] = $segments;
+
+        // 1. 解析 Header
+        $header = json_decode(Str::base64UrlDecode($base64UrlHeader), true);
+        if ($header === null || empty($header['alg'])) {
+            throw new AppException(9022020002, "Header 缺失或非法");
+        }
+
+        // 2. 防御算法降级/混乱攻击 (Algorithm Confusion Attack)
+        if (!in_array($header['alg'], $allowedAlgs, true)) {
+            throw new AppException(9022020003, "不允许的签名算法: " . $header['alg']);
+        }
+
+        // 3. JWKS 密钥路由 (通过 kid 寻找对应的公钥)
+        if (is_array($keys)) {
+            if (!isset($header['kid'])) {
+                throw new AppException(9022020004, "JWT Header 中未提供 'kid'，无法在多密钥集中寻找对应公钥");
+            }
+            if (!isset($keys[$header['kid']])) {
+                throw new AppException(9022020005, "未知的 'kid': {$header['kid']}");
+            }
+            $key = $keys[$header['kid']];
+        } else {
+            $key = $keys;
+        }
+
+        // 4. 验证签名
+        $signingInput = $base64UrlHeader . '.' . $base64UrlPayload;
+        $providedSignature = Str::base64UrlDecode($base64UrlSignature);
+
+        if (!self::verify($signingInput, $providedSignature, $key, $header['alg'])) {
+            throw new AppException(9022020006, "签名验证失败");
+        }
+
+        // 5. 解析 Payload
+        $payload = json_decode(Str::base64UrlDecode($base64UrlPayload), true);
+        if ($payload === null) {
+            throw new AppException(9022020007, "Payload 无法解析");
+        }
+
+        // 6. 基于 Leeway 的时间标准验证 (容忍系统时钟误差)
+        $now = time();
+        $leeway = self::$leeway;
+
+        if (isset($payload['nbf']) && $payload['nbf'] > ($now + $leeway)) {
+            throw new AppException(9022020008, "Token 尚未生效 (Not Before)");
+        }
+        if (isset($payload['iat']) && $payload['iat'] > ($now + $leeway)) {
+            throw new AppException(9022020009, "Token 签发时间在未来 (Issued At)");
+        }
+        if (isset($payload['exp']) && ($now - $leeway) >= $payload['exp']) {
+            throw new AppException(9022020010, "Token 已过期");
+        }
+
+        // 7. 业务主体验证
+        if ($expectedIss !== null && isset($payload['iss']) && $payload['iss'] !== $expectedIss) {
+            throw new AppException(9022020011, "非法的签发者 (Issuer)");
+        }
+        if ($expectedAud !== null && isset($payload['aud'])) {
+            $auds = (array) $payload['aud'];
+            if (!in_array($expectedAud, $auds, true)) {
+                throw new AppException(9022020012, "非法的受众 (Audience)");
+            }
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param string $msg 要签名的消息
+     * @param string $key 密钥
+     * @param string $alg 算法
+     * @return string 签名
+     */
+    private static function sign($msg, $key, $alg)
+    {
+        if ($alg === 'RS256') {
+            if (!openssl_sign($msg, $signature, $key, OPENSSL_ALGO_SHA256)) {
+                throw new AppException(9022030001, "RS256 签名失败");
+            }
+            return $signature;
+        } elseif ($alg === 'HS256') {
+            return hash_hmac('sha256', $msg, $key, true);
+        }
+        throw new AppException(9022030002, "不支持的算法: {$alg}");
+    }
+
+    /**
+     * @param string $msg 要验证的消息
+     * @param string $signature 签名
+     * @param string $key 密钥
+     * @param string $alg 算法
+     * @return bool 是否验证通过
+     */
+    private static function verify($msg, $signature, $key, $alg)
+    {
+        if ($alg === 'RS256') {
+            return openssl_verify($msg, $signature, $key, OPENSSL_ALGO_SHA256) === 1;
+        } elseif ($alg === 'HS256') {
+            return hash_equals(hash_hmac('sha256', $msg, $key, true), $signature);
+        }
+        return false;
+    }
+
+    /**
+     * 辅助工具：生成符合 RFC 7519 的标准 7 大字段 Payload
+     * @param string $issuer 签发者 (如应用名称)
+     * @param string $subject 主体 (如用户ID)
+     * @param int $ttl 过期时间 (秒)
+     * @param string $audience 受众 (如哪个微服务)
+     * @param array $custom 自定义字段 (如用户角色)
+     * @return array 标准 Payload
+     */
+    public static function payload($issuer, $subject, $ttl = 7200, $audience = null, $custom = [])
+    {
+        $now = time();
+        return array_merge([
+            'iss' => $issuer,                             // 签发者
+            'sub' => $subject,                            // 主体 (如用户ID)
+            'exp' => $now + $ttl,                         // 过期时间
+            'nbf' => $now,                                // 生效时间
+            'iat' => $now,                                // 签发时间
+            'aud' => $audience,                           // 受众 (如哪个微服务)
+            'jti' => bin2hex(random_bytes(16)),           // JWT ID
+        ], $custom);
+    }
+}
+
+/**
+ * 授权：无
+ */
+const ACL_NON = 0;
+/**
+ * 授权：登录
+ */
+const ACL_LOGIN = 1;
+/**
+ * 授权：认证
+ */
+const ACL_AUTH = 2;
+
+// 字段
+const KEY_COLUMN = 0;
+// 名称
+const KEY_NAME = 1;
+// 类型
+const KEY_TYPE = 2;
+// 默认值
+const KEY_DEFAULT = 3;
+
+/**
+ * 常量类
+ */
+class Consts
+{
+    /**
+     * 禁用
+     */
+    public const DISABLED = 0;
+    /**
+     * 启用
+     */
+    public const ENABLED = 1;
+    /**
+     * 离线
+     */
+    public const OFFLINE = 0;
+    /**
+     * 在线
+     */
+    public const ONLINE = 1;
+
+    /**
+     * 关闭
+     */
+    public const OFF = 0;
+    /**
+     * 开启
+     */
+    public const ON = 1;
+
+    /**
+     * 审核中
+     */
+    public const REVIEW_PENDING = 0;
+    /**
+     * 审核通过
+     */
+    public const REVIEW_APPROVED = 1;
+    /**
+     * 审核拒绝
+     */
+    public const REVIEW_REJECTED = 2;
+    /**
+     * 审核撤销
+     */
+    public const REVIEW_CANCELED = 3;
+
+    /**
+     * 整数
+     */
+    public const DB_INT = 0;
+    /**
+     * 浮点数
+     */
+    public const DB_FLOAT = 1;
+    /**
+     * 字符串
+     */
+    public const DB_STRING = 2;
+    /**
+     * JSON字符串
+     */
+    public const DB_JSON = 3;
+    /**
+     * 时间
+     */
+    public const DB_TIME = 4;
+    /**
+     * 价格
+     */
+    public const DB_PRICE = 5;
+
+}
+
+if (\PHP_VERSION_ID < 80000) {
+    if (!defined('FILTER_VALIDATE_BOOL') && defined('FILTER_VALIDATE_BOOLEAN')) {
+        define('FILTER_VALIDATE_BOOL', \FILTER_VALIDATE_BOOLEAN);
+    }
+
+    if (!function_exists('fdiv')) {
+        function fdiv(float $num1, float $num2): float {
+            return @($num1 / $num2);
+        }
+    }
+
+    if (!function_exists('preg_last_error_msg')) {
+        function preg_last_error_msg(): string {
+            switch (preg_last_error()) {
+                case \PREG_INTERNAL_ERROR:
+                    return 'Internal error';
+                case \PREG_BAD_UTF8_ERROR:
+                    return 'Malformed UTF-8 characters, possibly incorrectly encoded';
+                case \PREG_BAD_UTF8_OFFSET_ERROR:
+                    return 'The offset did not correspond to the beginning of a valid UTF-8 code point';
+                case \PREG_BACKTRACK_LIMIT_ERROR:
+                    return 'Backtrack limit exhausted';
+                case \PREG_RECURSION_LIMIT_ERROR:
+                    return 'Recursion limit exhausted';
+                case \PREG_JIT_STACKLIMIT_ERROR:
+                    return 'JIT stack limit exhausted';
+                case \PREG_NO_ERROR:
+                    return 'No error';
+                default:
+                    return 'Unknown error';
+            }
+        }
+    }
+
+    if (!function_exists('str_contains')) {
+        function str_contains(?string $haystack, ?string $needle): bool {
+            return '' === $needle || false !== strpos($haystack, $needle);
+        }
+    }
+
+    if (!function_exists('str_starts_with')) {
+        function str_starts_with(?string $haystack, ?string $needle): bool
+        {
+            return 0 === strncmp($haystack, $needle, \strlen($needle));
+        }
+    }
+
+    if (!function_exists('str_ends_with')) {
+        function str_ends_with(?string $haystack, ?string $needle): bool
+        {
+            if ('' === $needle || $needle === $haystack) {
+                return true;
+            }
+
+            if ('' === $haystack) {
+                return false;
+            }
+
+            $needleLength = \strlen($needle);
+
+            return $needleLength <= \strlen($haystack) && 0 === substr_compare($haystack, $needle, -$needleLength);
+        }
+    }
+}
+
+if (\PHP_VERSION_ID < 80100) {
+    if (defined('MYSQLI_REFRESH_SLAVE') && !defined('MYSQLI_REFRESH_REPLICA')) {
+        define('MYSQLI_REFRESH_REPLICA', 64);
+    }
+
+    if (\extension_loaded('curl') && !defined('CURLOPT_ISSUERCERT_BLOB') && curl_version()['version_number'] >= 0x074700) {
+        define('CURLOPT_ISSUERCERT_BLOB', 40295);
+    }
+
+    if (!function_exists('array_is_list')) {
+        function array_is_list(array $array): bool
+        {
+            if ([] === $array || $array === array_values($array)) {
+                return true;
+            }
+
+            $nextKey = -1;
+
+            foreach ($array as $k => $v) {
+                if ($k !== ++$nextKey) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+}
+
+/**
+ * 打印变量
+ * @param mixed $expression
+ * @return string
+ */
+function var_output($expression) {
+    $export = var_export($expression, TRUE);
+    $export = preg_replace("/^([ ]*)(.*)/m", '$1$1$2', $export);
+    $array = preg_split("/\r\n|\n|\r/", $export);
+    $array = preg_replace(["/\s*array\s\($/", "/\)(,)?$/", "/\s=>\s$/"], [NULL, ']$1', ' => ['], $array);
+    $export = join("\n", array_filter(["["] + $array));
+    return $export;
+}
+
+/**
+ * 校验表单字段
+ * @param array $arr
+ * @return array
+ */
+function fcheck($arr)
+{
+    if (empty($arr)) {
+        return [];
+    }
+    $a = [];
+    foreach ($arr as $k=>$v) {
+        if (empty($v[2])) {
+            $v[2] = 'string';
+        }
+        if (!array_key_exists(3, $v)) {
+            $v[3] = 'nullable';
+        }
+        if (is_numeric($k)) {
+            $k = $v[0];
+        }
+        if (is_array($v[2])) {
+            if (is_string($v[2][0]) && is_array($v[2][1])) {
+                if (!is_subclass_of($v[2][0], Model::class)) {
+                    throw new Exception($v[2][0] . '不是模型类');
+                }
+                if (empty($v[0])) {
+                    $tmp = &$a;
+                } else {
+                    $a[$k] = [
+                        'name' => $v[1],
+                        'children' => [],
+                        'required' => $v[3] === null,
+                    ];
+                    $tmp = &$a[$k]['children'];
+                }
+                foreach ($v[2][0]::COLUMNS as $kc=>$vc) {
+                    if (in_array($kc, $v[2][1]) || $kc == 'deleted_at') {
+                        continue;
+                    }
+                    $tmp[$kc] = new Field($vc[0], $vc[1], $vc[2], $v[3] ?? null);
+                }
+            } else {
+                $a[$k] = [
+                    'name' => $v[1],
+                    'children' => fcheck($v[2]),
+                    'required' => $v[3] === null,
+                    'format' => $v[4] ?? null,
+                ];
+            }
+        } else {
+            $a[$k] = new Field($v[0], $v[1], $v[2], $v[3] ?? null, $v[4] ?? null, $v[5] ?? null);
+        }
+    }
+    return $a;
+}
+
+/**
+ * 打印数据
+ * @param mixed $data
+ * @param bool $exit
+ */
+function d($data, $exit = false)
+{
+    if (is_object($data)) {
+        if (method_exists($data, 'toArray')) {
+            $data = $data->toArray();
+        }
+        echo json($data), "\n";
+    } elseif (is_array($data)) {
+        echo json($data), "\n";
+    } else {
+        echo $data, "\n";
+    }
+    if ($exit) {
+        exit;
+    }
+}
+
+/**
+ * 校验值
+ * @param array $column
+ * @param mixed $v
+ * @return mixed
+ */
+function checkValue($column, $v)
+{
+    if ($v === null) {
+        if (!array_key_exists(KEY_DEFAULT, $column) || $column[KEY_DEFAULT] === null) {
+            throw new \Exception($column[KEY_NAME] . '不能为空');
+        }
+        return $column[KEY_DEFAULT] === 'nullable' ? null : $column[KEY_DEFAULT];
+    }
+    $tmp = explode('|', $column[KEY_TYPE]);
+    $type = $tmp[0];
+    switch ($type) {
+        case 'int':
+            return intval($v);
+        case 'float':
+            return floatval($v);
+        case 'Date':
+            return new \Time($v, 'Y-m-d');
+        case 'Time':
+        case 'DateTime':
+            return new \Time($v);
+        case 'array':
+            if (!is_array($v)) {
+                $v = json_decode($v, true);
+            }
+            return $v;
+        case 'string':
+            return strval($v);
+        default:
+            return $v;
+    }
+}
+
+/**
+ * 获取存储路径
+ * @param string $path
+ * @return string
+ */
+function storage_path($path)
+{
+    return APP_PATH . '/storage/' . $path;
+}
+
+/**
+ * 获取公共路径
+ * @param string $path
+ * @return string
+ */
+function public_path($path)
+{
+    return APP_PATH . '/public/' . $path;
+}
+
+/**
+ * 获取日志路径
+ * @param string $path
+ * @return string
+ */
+function log_path($path)
+{
+    return storage_path('logs/' . $path);
+}
+
+/**
+ * 转换为JSON字符串
+ * @param mixed $data
+ * @return string
+ */
+function json($data)
+{
+    return json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * 转换为驼峰命名法
+ * @param string $str
+ * @return string
+ */
+function snakeToCamel($str, $ucfirst = true)
+{
+    return S2C[$str] ?? Str::snakeToCamel($str, $ucfirst);
+}
+
+/**
+ * 生成UUID
+ * @param bool $min
+ * @return string
+ */
+function uuid($prefix = '', $min = true) {
+    $data = random_bytes(16);
+    $data[6] = chr(ord($data[6]) & 0x0f | 0x40); // set version to 0100
+    $data[8] = chr(ord($data[8]) & 0x3f | 0x80); // set bits 6-7 to 10
+    return $prefix . vsprintf($min ? '%s%s%s%s%s%s%s%s' : '%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+}
+
+/**
+ * 获取环境变量
+ * @param string $key
+ * @param mixed $default
+ * @return mixed
+ */
+function env($key, $default = null)
+{
+    return Ypf::env($key, $default);
 }
