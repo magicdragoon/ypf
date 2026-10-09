@@ -1,9 +1,9 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\Exception;
 
-use OpenSpout\Common\Exception\OpenSpoutException;
+use OpenSpout\Common\Exception\SpoutException;
 
-abstract class WriterException extends OpenSpoutException {}
+abstract class WriterException extends SpoutException
+{
+}

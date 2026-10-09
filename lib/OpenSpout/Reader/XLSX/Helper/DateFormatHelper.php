@@ -1,13 +1,11 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\XLSX\Helper;
 
 /**
- * @internal
+ * This class provides helper functions to format Excel dates.
  */
-final class DateFormatHelper
+class DateFormatHelper
 {
     public const KEY_GENERAL = 'general';
     public const KEY_HOUR_12 = '12h';
@@ -16,9 +14,10 @@ final class DateFormatHelper
     /**
      * This map is used to replace Excel format characters by their PHP equivalent.
      * Keys should be ordered from longest to smallest.
-     * Mapping between Excel format characters and PHP format characters.
+     *
+     * @var array Mapping between Excel format characters and PHP format characters
      */
-    private const excelDateFormatToPHPDateFormatMapping = [
+    private static $excelDateFormatToPHPDateFormatMapping = [
         self::KEY_GENERAL => [
             // Time
             'am/pm' => 'A',  // Uppercase Ante meridiem and Post meridiem
@@ -58,13 +57,12 @@ final class DateFormatHelper
      *
      * @return string PHP date format (as defined here: http://php.net/manual/en/function.date.php)
      */
-    public static function toPHPDateFormat(string $excelDateFormat): string
+    public static function toPHPDateFormat($excelDateFormat)
     {
         // Remove brackets potentially present at the beginning of the format string
         // and text portion of the format at the end of it (starting with ";")
         // See §18.8.31 of ECMA-376 for more detail.
         $dateFormat = preg_replace('/^(?:\[\$[^\]]+?\])?([^;]*).*/', '$1', $excelDateFormat);
-        \assert(null !== $dateFormat);
 
         // Double quotes are used to escape characters that must not be interpreted.
         // For instance, ["Day " dd] should result in "Day 13" and we should not try to interpret "D", "a", "y"
@@ -85,13 +83,13 @@ final class DateFormatHelper
             $transformedPart = str_replace('\\', '', $transformedPart);
 
             // Apply general transformation first...
-            $transformedPart = strtr($transformedPart, self::excelDateFormatToPHPDateFormatMapping[self::KEY_GENERAL]);
+            $transformedPart = strtr($transformedPart, self::$excelDateFormatToPHPDateFormatMapping[self::KEY_GENERAL]);
 
             // ... then apply hour transformation, for 12-hour or 24-hour format
             if (self::has12HourFormatMarker($dateFormatPart)) {
-                $transformedPart = strtr($transformedPart, self::excelDateFormatToPHPDateFormatMapping[self::KEY_HOUR_12]);
+                $transformedPart = strtr($transformedPart, self::$excelDateFormatToPHPDateFormatMapping[self::KEY_HOUR_12]);
             } else {
-                $transformedPart = strtr($transformedPart, self::excelDateFormatToPHPDateFormatMapping[self::KEY_HOUR_24]);
+                $transformedPart = strtr($transformedPart, self::$excelDateFormatToPHPDateFormatMapping[self::KEY_HOUR_24]);
             }
 
             // overwrite the parts array with the new transformed part
@@ -104,10 +102,9 @@ final class DateFormatHelper
         // Finally, to have the date format compatible with the DateTime::format() function, we need to escape
         // all characters that are inside double quotes (and double quotes must be removed).
         // For instance, ["Day " dd] should become [\D\a\y\ dd]
-        return preg_replace_callback('/"(.+?)"/', static function ($matches): string {
+        return preg_replace_callback('/"(.+?)"/', function ($matches) {
             $stringToEscape = $matches[1];
             $letters = preg_split('//u', $stringToEscape, -1, PREG_SPLIT_NO_EMPTY);
-            \assert(false !== $letters);
 
             return '\\'.implode('\\', $letters);
         }, $phpDateFormat);
@@ -118,7 +115,7 @@ final class DateFormatHelper
      *
      * @return bool Whether the given date format has the 12-hour format marker
      */
-    private static function has12HourFormatMarker(string $excelDateFormat): bool
+    private static function has12HourFormatMarker($excelDateFormat)
     {
         return false !== stripos($excelDateFormat, 'am/pm');
     }

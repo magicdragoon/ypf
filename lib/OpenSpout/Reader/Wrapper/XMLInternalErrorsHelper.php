@@ -1,24 +1,22 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\Wrapper;
 
 use OpenSpout\Reader\Exception\XMLProcessingException;
 
 /**
- * @internal
+ * Trait XMLInternalErrorsHelper.
  */
 trait XMLInternalErrorsHelper
 {
     /** @var bool Stores whether XML errors were initially stored internally - used to reset */
-    private bool $initialUseInternalErrorsValue;
+    protected $initialUseInternalErrorsValue;
 
     /**
      * To avoid displaying lots of warning/error messages on screen,
      * stores errors internally instead.
      */
-    private function useXMLInternalErrors(): void
+    protected function useXMLInternalErrors()
     {
         libxml_clear_errors();
         $this->initialUseInternalErrorsValue = libxml_use_internal_errors(true);
@@ -30,7 +28,7 @@ trait XMLInternalErrorsHelper
      *
      * @throws \OpenSpout\Reader\Exception\XMLProcessingException
      */
-    private function resetXMLInternalErrorsSettingAndThrowIfXMLErrorOccured(): void
+    protected function resetXMLInternalErrorsSettingAndThrowIfXMLErrorOccured()
     {
         if ($this->hasXMLErrorOccured()) {
             $this->resetXMLInternalErrorsSetting();
@@ -41,7 +39,7 @@ trait XMLInternalErrorsHelper
         $this->resetXMLInternalErrorsSetting();
     }
 
-    private function resetXMLInternalErrorsSetting(): void
+    protected function resetXMLInternalErrorsSetting()
     {
         libxml_use_internal_errors($this->initialUseInternalErrorsValue);
     }
@@ -51,7 +49,7 @@ trait XMLInternalErrorsHelper
      *
      * @return bool TRUE if an error occured, FALSE otherwise
      */
-    private function hasXMLErrorOccured(): bool
+    private function hasXMLErrorOccured()
     {
         return false !== libxml_get_last_error();
     }
@@ -61,11 +59,11 @@ trait XMLInternalErrorsHelper
      *
      * @see libxml_get_last_error
      *
-     * @return string Last XML error message or null if no error
+     * @return null|string Last XML error message or null if no error
      */
-    private function getLastXMLErrorMessage(): string
+    private function getLastXMLErrorMessage()
     {
-        $errorMessage = '';
+        $errorMessage = null;
         $error = libxml_get_last_error();
 
         if (false !== $error) {

@@ -1,42 +1,77 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\CSV;
 
-use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Exception\IOException;
 use OpenSpout\Common\Helper\EncodingHelper;
-use OpenSpout\Writer\AbstractWriter;
+use OpenSpout\Writer\Common\Entity\Options;
+use OpenSpout\Writer\WriterAbstract;
 
-final class Writer extends AbstractWriter
+/**
+ * This class provides support to write data to CSV files.
+ */
+class Writer extends WriterAbstract
 {
+    /** Number of rows to write before flushing */
+    public const FLUSH_THRESHOLD = 500;
+
     /** @var string Content-Type value for the header */
-    protected static string $headerContentType = 'text/csv; charset=UTF-8';
+    protected static $headerContentType = 'text/csv; charset=UTF-8';
 
-    private readonly Options $options;
+    /** @var int */
+    protected $lastWrittenRowIndex = 0;
 
-    private int $lastWrittenRowIndex = 0;
-
-    public function __construct(?Options $options = null)
+    /**
+     * Sets the field delimiter for the CSV.
+     *
+     * @param string $fieldDelimiter Character that delimits fields
+     *
+     * @return Writer
+     */
+    public function setFieldDelimiter($fieldDelimiter)
     {
-        $this->options = $options ?? new Options();
+        $this->optionsManager->setOption(Options::FIELD_DELIMITER, $fieldDelimiter);
+
+        return $this;
     }
 
-    public function getOptions(): Options
+    /**
+     * Sets the field enclosure for the CSV.
+     *
+     * @param string $fieldEnclosure Character that enclose fields
+     *
+     * @return Writer
+     */
+    public function setFieldEnclosure($fieldEnclosure)
     {
-        return $this->options;
+        $this->optionsManager->setOption(Options::FIELD_ENCLOSURE, $fieldEnclosure);
+
+        return $this;
+    }
+
+    /**
+     * Set if a BOM has to be added to the file.
+     *
+     * @param bool $shouldAddBOM
+     *
+     * @return Writer
+     */
+    public function setShouldAddBOM($shouldAddBOM)
+    {
+        $this->optionsManager->setOption(Options::SHOULD_ADD_BOM, (bool) $shouldAddBOM);
+
+        return $this;
     }
 
     /**
      * Opens the CSV streamer and makes it ready to accept data.
      */
-    protected function openWriter(): void
+    protected function openWriter()
     {
-        if ($this->options->SHOULD_ADD_BOM) {
+        if ($this->optionsManager->getOption(Options::SHOULD_ADD_BOM)) {
             // Adds UTF-8 BOM for Unicode compatibility
-            fwrite($this->filePointer, EncodingHelper::BOM_UTF8);
+            $this->globalFunctionsHelper->fputs($this->filePointer, EncodingHelper::BOM_UTF8);
         }
     }
 
@@ -47,36 +82,19 @@ final class Writer extends AbstractWriter
      *
      * @throws IOException If unable to write data
      */
-    protected function addRowToWriter(Row $row): void
+    protected function addRowToWriter(Row $row)
     {
-        $cells = array_map(static function (Cell\BooleanCell|Cell\DateIntervalCell|Cell\DateTimeCell|Cell\EmptyCell|Cell\FormulaCell|Cell\NumericCell|Cell\StringCell $value): string {
-            if ($value instanceof Cell\BooleanCell) {
-                return (string) (int) $value->getValue();
-            }
-            if ($value instanceof Cell\DateTimeCell) {
-                return $value->getValue()->format(DATE_ATOM);
-            }
-            if ($value instanceof Cell\DateIntervalCell) {
-                return $value->getValue()->format('P%yY%mM%dDT%hH%iM%sS%fF');
-            }
+        $fieldDelimiter = $this->optionsManager->getOption(Options::FIELD_DELIMITER);
+        $fieldEnclosure = $this->optionsManager->getOption(Options::FIELD_ENCLOSURE);
 
-            return (string) $value->getValue();
-        }, $row->getCells());
-
-        $wasWriteSuccessful = fputcsv(
-            $this->filePointer,
-            $cells,
-            $this->options->FIELD_DELIMITER,
-            $this->options->FIELD_ENCLOSURE,
-            ''
-        );
+        $wasWriteSuccessful = $this->globalFunctionsHelper->fputcsv($this->filePointer, $row->getCells(), $fieldDelimiter, $fieldEnclosure);
         if (false === $wasWriteSuccessful) {
-            throw new IOException('Unable to write data'); // @codeCoverageIgnore
+            throw new IOException('Unable to write data');
         }
 
         ++$this->lastWrittenRowIndex;
-        if (0 === $this->lastWrittenRowIndex % $this->options->FLUSH_THRESHOLD) {
-            fflush($this->filePointer);
+        if (0 === $this->lastWrittenRowIndex % self::FLUSH_THRESHOLD) {
+            $this->globalFunctionsHelper->fflush($this->filePointer);
         }
     }
 
@@ -84,7 +102,7 @@ final class Writer extends AbstractWriter
      * Closes the CSV streamer, preventing any additional writing.
      * If set, sets the headers and redirects output to the browser.
      */
-    protected function closeWriter(): void
+    protected function closeWriter()
     {
         $this->lastWrittenRowIndex = 0;
     }

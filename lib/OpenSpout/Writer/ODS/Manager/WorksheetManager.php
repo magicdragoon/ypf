@@ -1,37 +1,36 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\ODS\Manager;
 
-use DateTimeImmutable;
-use DateTimeInterface;
 use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Entity\Style\Style;
 use OpenSpout\Common\Exception\InvalidArgumentException;
 use OpenSpout\Common\Exception\IOException;
 use OpenSpout\Common\Helper\Escaper\ODS as ODSEscaper;
+use OpenSpout\Common\Helper\StringHelper;
 use OpenSpout\Writer\Common\Entity\Worksheet;
-use OpenSpout\Writer\Common\Helper\CellHelper;
 use OpenSpout\Writer\Common\Manager\RegisteredStyle;
 use OpenSpout\Writer\Common\Manager\Style\StyleMerger;
 use OpenSpout\Writer\Common\Manager\WorksheetManagerInterface;
 use OpenSpout\Writer\ODS\Manager\Style\StyleManager;
 
 /**
- * @internal
+ * ODS worksheet manager, providing the interfaces to work with ODS worksheets.
  */
-final class WorksheetManager implements WorksheetManagerInterface
+class WorksheetManager implements WorksheetManagerInterface
 {
-    /** @var ODSEscaper Strings escaper */
-    private readonly ODSEscaper $stringsEscaper;
+    /** @var \OpenSpout\Common\Helper\Escaper\ODS Strings escaper */
+    private $stringsEscaper;
+
+    /** @var StringHelper String helper */
+    private $stringHelper;
 
     /** @var StyleManager Manages styles */
-    private readonly StyleManager $styleManager;
+    private $styleManager;
 
     /** @var StyleMerger Helper to merge styles together */
-    private readonly StyleMerger $styleMerger;
+    private $styleMerger;
 
     /**
      * WorksheetManager constructor.
@@ -39,11 +38,13 @@ final class WorksheetManager implements WorksheetManagerInterface
     public function __construct(
         StyleManager $styleManager,
         StyleMerger $styleMerger,
-        ODSEscaper $stringsEscaper
+        ODSEscaper $stringsEscaper,
+        StringHelper $stringHelper
     ) {
         $this->styleManager = $styleManager;
         $this->styleMerger = $styleMerger;
         $this->stringsEscaper = $stringsEscaper;
+        $this->stringHelper = $stringHelper;
     }
 
     /**
@@ -53,10 +54,10 @@ final class WorksheetManager implements WorksheetManagerInterface
      *
      * @throws \OpenSpout\Common\Exception\IOException If the sheet data file cannot be opened for writing
      */
-    public function startSheet(Worksheet $worksheet): void
+    public function startSheet(Worksheet $worksheet)
     {
         $sheetFilePointer = fopen($worksheet->getFilePath(), 'w');
-        \assert(false !== $sheetFilePointer);
+        $this->throwIfSheetFilePointerIsNotAvailable($sheetFilePointer);
 
         $worksheet->setFilePointer($sheetFilePointer);
     }
@@ -66,7 +67,7 @@ final class WorksheetManager implements WorksheetManagerInterface
      *
      * @return string "<table>" node as string
      */
-    public function getTableElementStartAsString(Worksheet $worksheet): string
+    public function getTableElementStartAsString(Worksheet $worksheet)
     {
         $externalSheet = $worksheet->getExternalSheet();
         $escapedSheetName = $this->stringsEscaper->escape($externalSheet->getName());
@@ -79,31 +80,6 @@ final class WorksheetManager implements WorksheetManagerInterface
     }
 
     /**
-     * Returns the table:database-range XML node for AutoFilter as string.
-     */
-    public function getTableDatabaseRangeElementAsString(Worksheet $worksheet): string
-    {
-        $externalSheet = $worksheet->getExternalSheet();
-        $escapedSheetName = $this->stringsEscaper->escape($externalSheet->getName());
-        $databaseRange = '';
-
-        if (null !== $autofilter = $externalSheet->getAutoFilter()) {
-            $rangeAddress = sprintf(
-                '\'%s\'.%s%s:\'%s\'.%s%s',
-                $escapedSheetName,
-                CellHelper::getColumnLettersFromColumnIndex($autofilter->fromColumnIndex),
-                $autofilter->fromRow,
-                $escapedSheetName,
-                CellHelper::getColumnLettersFromColumnIndex($autofilter->toColumnIndex),
-                $autofilter->toRow
-            );
-            $databaseRange = '<table:database-range table:name="__Anonymous_Sheet_DB__'.$externalSheet->getIndex().'" table:target-range-address="'.$rangeAddress.'" table:display-filter-buttons="true"/>';
-        }
-
-        return $databaseRange;
-    }
-
-    /**
      * Adds a row to the given worksheet.
      *
      * @param Worksheet $worksheet The worksheet to add the row to
@@ -112,7 +88,7 @@ final class WorksheetManager implements WorksheetManagerInterface
      * @throws InvalidArgumentException If a cell value's type is not supported
      * @throws IOException              If the data cannot be written
      */
-    public function addRow(Worksheet $worksheet, Row $row): void
+    public function addRow(Worksheet $worksheet, Row $row)
     {
         $cells = $row->getCells();
         $rowStyle = $row->getStyle();
@@ -125,7 +101,6 @@ final class WorksheetManager implements WorksheetManagerInterface
         for ($i = 0; $i < $row->getNumCells(); ++$i) {
             /** @var Cell $cell */
             $cell = $cells[$currentCellIndex];
-
             /** @var null|Cell $nextCell */
             $nextCell = $cells[$nextCellIndex] ?? null;
 
@@ -158,9 +133,63 @@ final class WorksheetManager implements WorksheetManagerInterface
     /**
      * Closes the worksheet.
      */
-    public function close(Worksheet $worksheet): void
+    public function close(Worksheet $worksheet)
     {
-        fclose($worksheet->getFilePointer());
+        $worksheetFilePointer = $worksheet->getFilePointer();
+
+        if (!\is_resource($worksheetFilePointer)) {
+            return;
+        }
+
+        fclose($worksheetFilePointer);
+    }
+
+    /**
+     * @param null|float $width
+     */
+    public function setDefaultColumnWidth($width)
+    {
+        $this->styleManager->setDefaultColumnWidth($width);
+    }
+
+    /**
+     * @param null|float $height
+     */
+    public function setDefaultRowHeight($height)
+    {
+        $this->styleManager->setDefaultRowHeight($height);
+    }
+
+    /**
+     * @param int ...$columns One or more columns with this width
+     */
+    public function setColumnWidth(float $width, ...$columns)
+    {
+        $this->styleManager->setColumnWidth($width, ...$columns);
+    }
+
+    /**
+     * @param float $width The width to set
+     * @param int   $start First column index of the range
+     * @param int   $end   Last column index of the range
+     */
+    public function setColumnWidthForRange(float $width, int $start, int $end)
+    {
+        $this->styleManager->setColumnWidthForRange($width, $start, $end);
+    }
+
+    /**
+     * Checks if the sheet has been sucessfully created. Throws an exception if not.
+     *
+     * @param bool|resource $sheetFilePointer Pointer to the sheet data file or FALSE if unable to open the file
+     *
+     * @throws IOException If the sheet data file cannot be opened for writing
+     */
+    private function throwIfSheetFilePointerIsNotAvailable($sheetFilePointer)
+    {
+        if (!$sheetFilePointer) {
+            throw new IOException('Unable to open sheet for writing.');
+        }
     }
 
     /**
@@ -215,11 +244,11 @@ final class WorksheetManager implements WorksheetManagerInterface
      * @param int  $styleIndex            Index of the used style
      * @param int  $numTimesValueRepeated Number of times the value is consecutively repeated
      *
-     * @return string The cell XML content
-     *
      * @throws InvalidArgumentException If a cell value's type is not supported
+     *
+     * @return string The cell XML content
      */
-    private function getCellXML(Cell $cell, int $styleIndex, int $numTimesValueRepeated): string
+    private function getCellXML(Cell $cell, $styleIndex, $numTimesValueRepeated)
     {
         $data = '<table:table-cell table:style-name="ce'.$styleIndex.'"';
 
@@ -227,7 +256,7 @@ final class WorksheetManager implements WorksheetManagerInterface
             $data .= ' table:number-columns-repeated="'.$numTimesValueRepeated.'"';
         }
 
-        if ($cell instanceof Cell\StringCell) {
+        if ($cell->isString()) {
             $data .= ' office:value-type="string" calcext:value-type="string">';
 
             $cellValueLines = explode("\n", $cell->getValue());
@@ -236,36 +265,42 @@ final class WorksheetManager implements WorksheetManagerInterface
             }
 
             $data .= '</table:table-cell>';
-        } elseif ($cell instanceof Cell\BooleanCell) {
+        } elseif ($cell->isBoolean()) {
             $value = $cell->getValue() ? 'true' : 'false'; // boolean-value spec: http://docs.oasis-open.org/office/v1.2/os/OpenDocument-v1.2-os-part1.html#datatype-boolean
             $data .= ' office:value-type="boolean" calcext:value-type="boolean" office:boolean-value="'.$value.'">';
             $data .= '<text:p>'.$cell->getValue().'</text:p>';
             $data .= '</table:table-cell>';
-        } elseif ($cell instanceof Cell\NumericCell) {
-            $cellValue = $cell->getValue();
+        } elseif ($cell->isNumeric()) {
+            $cellValue = $this->stringHelper->formatNumericValue($cell->getValue());
             $data .= ' office:value-type="float" calcext:value-type="float" office:value="'.$cellValue.'">';
             $data .= '<text:p>'.$cellValue.'</text:p>';
             $data .= '</table:table-cell>';
-        } elseif ($cell instanceof Cell\DateTimeCell) {
-            $datevalue = substr((new DateTimeImmutable('@'.$cell->getValue()->getTimestamp()))->format(DateTimeInterface::W3C), 0, -6);
-            $data .= ' office:value-type="date" calcext:value-type="date" office:date-value="'.$datevalue.'Z">';
-            $data .= '<text:p>'.$datevalue.'Z</text:p>';
+        } elseif ($cell->isDate()) {
+            $value = $cell->getValue();
+            if ($value instanceof \DateTimeInterface) {
+                $datevalue = substr((new \DateTimeImmutable('@'.$value->getTimestamp()))->format(\DateTimeInterface::W3C), 0, -6);
+                $data .= ' office:value-type="date" calcext:value-type="date" office:date-value="'.$datevalue.'Z">';
+                $data .= '<text:p>'.$datevalue.'Z</text:p>';
+            } elseif ($value instanceof \DateInterval) {
+                // workaround for missing DateInterval::format('c'), see https://stackoverflow.com/a/61088115/53538
+                static $f = ['M0S', 'H0M', 'DT0H', 'M0D', 'Y0M', 'P0Y', 'Y0M', 'P0M'];
+                static $r = ['M', 'H', 'DT', 'M', 'Y0M', 'P', 'Y', 'P'];
+                $value = rtrim(str_replace($f, $r, $value->format('P%yY%mM%dDT%hH%iM%sS')), 'PT') ?: 'PT0S';
+                $data .= ' office:value-type="time" office:time-value="'.$value.'">';
+                $data .= '<text:p>'.$value.'</text:p>';
+            } else {
+                throw new InvalidArgumentException('Trying to add a date value with an unsupported type: '.\gettype($cell->getValue()));
+            }
             $data .= '</table:table-cell>';
-        } elseif ($cell instanceof Cell\DateIntervalCell) {
-            // workaround for missing DateInterval::format('c'), see https://stackoverflow.com/a/61088115/53538
-            static $f = ['M0S', 'H0M', 'DT0H', 'M0D', 'Y0M', 'P0Y', 'Y0M', 'P0M'];
-            static $r = ['M', 'H', 'DT', 'M', 'Y0M', 'P', 'Y', 'P'];
-            $value = rtrim(str_replace($f, $r, $cell->getValue()->format('P%yY%mM%dDT%hH%iM%sS')), 'PT') ?: 'PT0S';
-            $data .= ' office:value-type="time" office:time-value="'.$value.'">';
-            $data .= '<text:p>'.$value.'</text:p>';
-            $data .= '</table:table-cell>';
-        } elseif ($cell instanceof Cell\ErrorCell) {
+        } elseif ($cell->isError() && \is_string($cell->getValueEvenIfError())) {
             // only writes the error value if it's a string
             $data .= ' office:value-type="string" calcext:value-type="error" office:value="">';
-            $data .= '<text:p>'.$cell->getRawValue().'</text:p>';
+            $data .= '<text:p>'.$cell->getValueEvenIfError().'</text:p>';
             $data .= '</table:table-cell>';
-        } elseif ($cell instanceof Cell\EmptyCell) {
+        } elseif ($cell->isEmpty()) {
             $data .= '/>';
+        } else {
+            throw new InvalidArgumentException('Trying to add a value with an unsupported type: '.\gettype($cell->getValue()));
         }
 
         return $data;

@@ -1,55 +1,47 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\XLSX\Manager;
 
-use OpenSpout\Writer\Common\Entity\Workbook;
-use OpenSpout\Writer\Common\Manager\AbstractWorkbookManager;
-use OpenSpout\Writer\Common\Manager\Style\StyleMerger;
+use OpenSpout\Writer\Common\Entity\Sheet;
+use OpenSpout\Writer\Common\Manager\WorkbookManagerAbstract;
 use OpenSpout\Writer\XLSX\Helper\FileSystemHelper;
 use OpenSpout\Writer\XLSX\Manager\Style\StyleManager;
-use OpenSpout\Writer\XLSX\Options;
 
 /**
- * @internal
- *
- * @property WorksheetManager $worksheetManager
- * @property StyleManager     $styleManager
- * @property FileSystemHelper $fileSystemHelper
- * @property Options          $options
+ * XLSX workbook manager, providing the interfaces to work with workbook.
  */
-final class WorkbookManager extends AbstractWorkbookManager
+class WorkbookManager extends WorkbookManagerAbstract
 {
     /**
      * Maximum number of rows a XLSX sheet can contain.
      *
      * @see http://office.microsoft.com/en-us/excel-help/excel-specifications-and-limits-HP010073849.aspx
      */
-    private static int $maxRowsPerWorksheet = 1048576;
+    protected static $maxRowsPerWorksheet = 1048576;
 
-    public function __construct(
-        Workbook $workbook,
-        Options $options,
-        WorksheetManager $worksheetManager,
-        StyleManager $styleManager,
-        StyleMerger $styleMerger,
-        FileSystemHelper $fileSystemHelper
-    ) {
-        parent::__construct(
-            $workbook,
-            $options,
-            $worksheetManager,
-            $styleManager,
-            $styleMerger,
-            $fileSystemHelper
-        );
+    /** @var WorksheetManager Object used to manage worksheets */
+    protected $worksheetManager;
+
+    /** @var StyleManager Manages styles */
+    protected $styleManager;
+
+    /** @var FileSystemHelper Helper to perform file system operations */
+    protected $fileSystemHelper;
+
+    /**
+     * @return string The file path where the data for the given sheet will be stored
+     */
+    public function getWorksheetFilePath(Sheet $sheet)
+    {
+        $worksheetFilesFolder = $this->fileSystemHelper->getXlWorksheetsFolder();
+
+        return $worksheetFilesFolder.'/'.strtolower($sheet->getName()).'.xml';
     }
 
     /**
      * @return int Maximum number of rows/columns a sheet can contain
      */
-    protected function getMaxRowsPerWorksheet(): int
+    protected function getMaxRowsPerWorksheet()
     {
         return self::$maxRowsPerWorksheet;
     }
@@ -57,7 +49,7 @@ final class WorkbookManager extends AbstractWorkbookManager
     /**
      * Closes custom objects that are still opened.
      */
-    protected function closeRemainingObjects(): void
+    protected function closeRemainingObjects()
     {
         $this->worksheetManager->getSharedStringsManager()->close();
     }
@@ -67,17 +59,14 @@ final class WorkbookManager extends AbstractWorkbookManager
      *
      * @param resource $finalFilePointer Pointer to the spreadsheet that will be created
      */
-    protected function writeAllFilesToDiskAndZipThem($finalFilePointer): void
+    protected function writeAllFilesToDiskAndZipThem($finalFilePointer)
     {
         $worksheets = $this->getWorksheets();
 
         $this->fileSystemHelper
-            ->createContentFiles($this->options, $worksheets)
-            ->deleteWorksheetTempFolder()
             ->createContentTypesFile($worksheets)
             ->createWorkbookFile($worksheets)
             ->createWorkbookRelsFile($worksheets)
-            ->createWorksheetRelsFiles($worksheets)
             ->createStylesFile($this->styleManager)
             ->zipRootFolderAndCopyToStream($finalFilePointer)
         ;

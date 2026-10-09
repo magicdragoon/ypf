@@ -1,43 +1,28 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\ODS;
 
 use OpenSpout\Common\Exception\IOException;
-use OpenSpout\Common\Helper\Escaper\ODS;
-use OpenSpout\Reader\AbstractReader;
-use OpenSpout\Reader\ODS\Helper\SettingsHelper;
-use ZipArchive;
+use OpenSpout\Reader\ODS\Creator\InternalEntityFactory;
+use OpenSpout\Reader\ReaderAbstract;
 
 /**
- * @extends AbstractReader<SheetIterator>
+ * This class provides support to read data from a ODS file.
  */
-final class Reader extends AbstractReader
+class Reader extends ReaderAbstract
 {
-    private ZipArchive $zip;
-
-    private readonly Options $options;
+    /** @var \ZipArchive */
+    protected $zip;
 
     /** @var SheetIterator To iterator over the ODS sheets */
-    private SheetIterator $sheetIterator;
-
-    public function __construct(?Options $options = null)
-    {
-        $this->options = $options ?? new Options();
-    }
-
-    public function getSheetIterator(): SheetIterator
-    {
-        $this->ensureStreamOpened();
-
-        return $this->sheetIterator;
-    }
+    protected $sheetIterator;
 
     /**
      * Returns whether stream wrappers are supported.
+     *
+     * @return bool
      */
-    protected function doesSupportStreamWrapper(): bool
+    protected function doesSupportStreamWrapper()
     {
         return false;
     }
@@ -50,22 +35,39 @@ final class Reader extends AbstractReader
      * @throws \OpenSpout\Common\Exception\IOException            If the file at the given path or its content cannot be read
      * @throws \OpenSpout\Reader\Exception\NoSheetsFoundException If there are no sheets in the file
      */
-    protected function openReader(string $filePath): void
+    protected function openReader($filePath)
     {
-        $this->zip = new ZipArchive();
+        /** @var InternalEntityFactory $entityFactory */
+        $entityFactory = $this->entityFactory;
 
-        if (true !== $this->zip->open($filePath)) {
+        $this->zip = $entityFactory->createZipArchive();
+
+        if (true === $this->zip->open($filePath)) {
+            /** @var InternalEntityFactory $entityFactory */
+            $entityFactory = $this->entityFactory;
+            $this->sheetIterator = $entityFactory->createSheetIterator($filePath, $this->optionsManager);
+        } else {
             throw new IOException("Could not open {$filePath} for reading.");
         }
+    }
 
-        $this->sheetIterator = new SheetIterator($filePath, $this->options, new ODS(), new SettingsHelper());
+    /**
+     * Returns an iterator to iterate over sheets.
+     *
+     * @return SheetIterator To iterate over sheets
+     */
+    protected function getConcreteSheetIterator()
+    {
+        return $this->sheetIterator;
     }
 
     /**
      * Closes the reader. To be used after reading the file.
      */
-    protected function closeReader(): void
+    protected function closeReader()
     {
-        $this->zip->close();
+        if (null !== $this->zip) {
+            $this->zip->close();
+        }
     }
 }

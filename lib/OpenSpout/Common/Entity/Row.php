@@ -1,34 +1,39 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Common\Entity;
 
-use DateInterval;
-use DateTimeInterface;
 use OpenSpout\Common\Entity\Style\Style;
 
-final class Row
+class Row
 {
     /**
      * The cells in this row.
      *
      * @var Cell[]
      */
-    private array $cells = [];
+    protected $cells = [];
 
-    /** The row style. */
-    private Style $style;
+    /**
+     * The row style.
+     *
+     * @var Style
+     */
+    protected $style;
 
-    /** Row height. */
-    private float $height = 0;
+    /**
+     * Row height (default is 15).
+     *
+     * @var string
+     */
+    protected $height = '15';
 
     /**
      * Row constructor.
      *
-     * @param Cell[] $cells
+     * @param Cell[]     $cells
+     * @param null|Style $style
      */
-    public function __construct(array $cells, ?Style $style = null)
+    public function __construct(array $cells, $style)
     {
         $this
             ->setCells($cells)
@@ -37,29 +42,19 @@ final class Row
     }
 
     /**
-     * @param list<null|bool|DateInterval|DateTimeInterface|float|int|string> $cellValues
-     */
-    public static function fromValues(array $cellValues = [], ?Style $rowStyle = null): self
-    {
-        $cells = array_map(static function (null|bool|DateInterval|DateTimeInterface|float|int|string $cellValue): Cell {
-            return Cell::fromValue($cellValue);
-        }, $cellValues);
-
-        return new self($cells, $rowStyle);
-    }
-
-    /**
      * @return Cell[] $cells
      */
-    public function getCells(): array
+    public function getCells()
     {
         return $this->cells;
     }
 
     /**
      * @param Cell[] $cells
+     *
+     * @return Row
      */
-    public function setCells(array $cells): self
+    public function setCells(array $cells)
     {
         $this->cells = [];
         foreach ($cells as $cell) {
@@ -69,52 +64,90 @@ final class Row
         return $this;
     }
 
-    public function setCellAtIndex(Cell $cell, int $cellIndex): self
+    /**
+     * @param int $cellIndex
+     *
+     * @return Row
+     */
+    public function setCellAtIndex(Cell $cell, $cellIndex)
     {
         $this->cells[$cellIndex] = $cell;
 
         return $this;
     }
 
-    public function getCellAtIndex(int $cellIndex): ?Cell
+    /**
+     * @param int $cellIndex
+     *
+     * @return null|Cell
+     */
+    public function getCellAtIndex($cellIndex)
     {
         return $this->cells[$cellIndex] ?? null;
     }
 
-    public function addCell(Cell $cell): self
+    /**
+     * @return Row
+     */
+    public function addCell(Cell $cell)
     {
         $this->cells[] = $cell;
 
         return $this;
     }
 
-    public function getNumCells(): int
+    /**
+     * @return int
+     */
+    public function getNumCells()
     {
         // When using "setCellAtIndex", it's possible to
         // have "$this->cells" contain holes.
-        if ([] === $this->cells) {
+        if (empty($this->cells)) {
             return 0;
         }
 
         return max(array_keys($this->cells)) + 1;
     }
 
-    public function getStyle(): Style
+    /**
+     * @return Style
+     */
+    public function getStyle()
     {
         return $this->style;
     }
 
-    public function setStyle(?Style $style): self
+    /**
+     * @param null|Style $style
+     *
+     * @return Row
+     */
+    public function setStyle($style)
     {
-        $this->style = $style ?? new Style();
+        $this->style = $style ?: new Style();
 
         return $this;
     }
 
     /**
-     * Set row height.
+     * @return array The row values, as array
      */
-    public function setHeight(float $height): self
+    public function toArray()
+    {
+        return array_map(function (Cell $cell) {
+            return $cell->getValue();
+        }, $this->cells);
+    }
+
+    /**
+     * Set row height.
+     *
+     * @param string $height
+     *
+     * @return Row
+     */
+    public function setHeight($height)
     {
         $this->height = $height;
 
@@ -123,34 +156,11 @@ final class Row
 
     /**
      * Returns row height.
+     *
+     * @return string
      */
-    public function getHeight(): float
+    public function getHeight()
     {
         return $this->height;
-    }
-
-    /**
-     * @return list<null|bool|DateInterval|DateTimeInterface|float|int|string> The row values, as array
-     */
-    public function toArray(): array
-    {
-        return array_map(static function (Cell $cell): null|bool|DateInterval|DateTimeInterface|float|int|string {
-            return $cell->getValue();
-        }, $this->cells);
-    }
-
-    /**
-     * Detect whether a row is considered empty.
-     * An empty row has all of its cells empty.
-     */
-    public function isEmpty(): bool
-    {
-        foreach ($this->cells as $cell) {
-            if (!$cell instanceof Cell\EmptyCell) {
-                return false;
-            }
-        }
-
-        return true;
     }
 }

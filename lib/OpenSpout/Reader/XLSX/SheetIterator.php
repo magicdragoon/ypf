@@ -1,30 +1,28 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\XLSX;
 
 use OpenSpout\Reader\Exception\NoSheetsFoundException;
-use OpenSpout\Reader\SheetIteratorInterface;
+use OpenSpout\Reader\IteratorInterface;
 use OpenSpout\Reader\XLSX\Manager\SheetManager;
 
 /**
- * @implements SheetIteratorInterface<Sheet>
+ * Iterate over XLSX sheet.
  */
-final class SheetIterator implements SheetIteratorInterface
+class SheetIterator implements IteratorInterface
 {
-    /** @var Sheet[] The list of sheet present in the file */
-    private array $sheets;
+    /** @var \OpenSpout\Reader\XLSX\Sheet[] The list of sheet present in the file */
+    protected $sheets;
 
     /** @var int The index of the sheet being read (zero-based) */
-    private int $currentSheetIndex = 0;
+    protected $currentSheetIndex;
 
     /**
      * @param SheetManager $sheetManager Manages sheets
      *
-     * @throws NoSheetsFoundException If there are no sheets in the file
+     * @throws \OpenSpout\Reader\Exception\NoSheetsFoundException If there are no sheets in the file
      */
-    public function __construct(SheetManager $sheetManager)
+    public function __construct($sheetManager)
     {
         // Fetch all available sheets
         $this->sheets = $sheetManager->getSheets();
@@ -39,7 +37,8 @@ final class SheetIterator implements SheetIteratorInterface
      *
      * @see http://php.net/manual/en/iterator.rewind.php
      */
-    public function rewind(): void
+    #[\ReturnTypeWillChange]
+    public function rewind()
     {
         $this->currentSheetIndex = 0;
     }
@@ -48,8 +47,11 @@ final class SheetIterator implements SheetIteratorInterface
      * Checks if current position is valid.
      *
      * @see http://php.net/manual/en/iterator.valid.php
+     *
+     * @return bool
      */
-    public function valid(): bool
+    #[\ReturnTypeWillChange]
+    public function valid()
     {
         return $this->currentSheetIndex < \count($this->sheets);
     }
@@ -59,17 +61,27 @@ final class SheetIterator implements SheetIteratorInterface
      *
      * @see http://php.net/manual/en/iterator.next.php
      */
-    public function next(): void
+    #[\ReturnTypeWillChange]
+    public function next()
     {
-        ++$this->currentSheetIndex;
+        // Using isset here because it is way faster than array_key_exists...
+        if (isset($this->sheets[$this->currentSheetIndex])) {
+            $currentSheet = $this->sheets[$this->currentSheetIndex];
+            $currentSheet->getRowIterator()->end();
+
+            ++$this->currentSheetIndex;
+        }
     }
 
     /**
      * Return the current element.
      *
      * @see http://php.net/manual/en/iterator.current.php
+     *
+     * @return \OpenSpout\Reader\XLSX\Sheet
      */
-    public function current(): Sheet
+    #[\ReturnTypeWillChange]
+    public function current()
     {
         return $this->sheets[$this->currentSheetIndex];
     }
@@ -78,9 +90,24 @@ final class SheetIterator implements SheetIteratorInterface
      * Return the key of the current element.
      *
      * @see http://php.net/manual/en/iterator.key.php
+     *
+     * @return int
      */
-    public function key(): int
+    #[\ReturnTypeWillChange]
+    public function key()
     {
         return $this->currentSheetIndex + 1;
+    }
+
+    /**
+     * Cleans up what was created to iterate over the object.
+     */
+    #[\ReturnTypeWillChange]
+    public function end()
+    {
+        // make sure we are not leaking memory in case the iteration stopped before the end
+        foreach ($this->sheets as $sheet) {
+            $sheet->getRowIterator()->end();
+        }
     }
 }

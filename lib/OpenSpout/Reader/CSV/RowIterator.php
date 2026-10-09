@@ -1,52 +1,76 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\CSV;
 
-use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Helper\EncodingHelper;
+use OpenSpout\Common\Helper\GlobalFunctionsHelper;
+use OpenSpout\Common\Manager\OptionsManagerInterface;
+use OpenSpout\Reader\Common\Entity\Options;
+use OpenSpout\Reader\CSV\Creator\InternalEntityFactory;
 use OpenSpout\Reader\RowIteratorInterface;
 
 /**
  * Iterate over CSV rows.
  */
-final class RowIterator implements RowIteratorInterface
+class RowIterator implements RowIteratorInterface
 {
     /**
-     * Value passed to fgetcsv. 0 means "unlimited" (slightly slower but accommodates for very long lines).
+     * Value passed to fgetcsv. 0 means "unlimited" (slightly slower but accomodates for very long lines).
      */
     public const MAX_READ_BYTES_PER_LINE = 0;
 
     /** @var null|resource Pointer to the CSV file to read */
-    private $filePointer;
+    protected $filePointer;
 
     /** @var int Number of read rows */
-    private int $numReadRows = 0;
+    protected $numReadRows = 0;
 
     /** @var null|Row Buffer used to store the current row, while checking if there are more rows to read */
-    private ?Row $rowBuffer = null;
+    protected $rowBuffer;
 
     /** @var bool Indicates whether all rows have been read */
-    private bool $hasReachedEndOfFile = false;
+    protected $hasReachedEndOfFile = false;
 
-    private readonly Options $options;
+    /** @var string Defines the character used to delimit fields (one character only) */
+    protected $fieldDelimiter;
 
-    /** @var EncodingHelper Helper to work with different encodings */
-    private readonly EncodingHelper $encodingHelper;
+    /** @var string Defines the character used to enclose fields (one character only) */
+    protected $fieldEnclosure;
+
+    /** @var string Encoding of the CSV file to be read */
+    protected $encoding;
+
+    /** @var bool Whether empty rows should be returned or skipped */
+    protected $shouldPreserveEmptyRows;
+
+    /** @var \OpenSpout\Common\Helper\EncodingHelper Helper to work with different encodings */
+    protected $encodingHelper;
+
+    /** @var \OpenSpout\Reader\CSV\Creator\InternalEntityFactory Factory to create entities */
+    protected $entityFactory;
+
+    /** @var \OpenSpout\Common\Helper\GlobalFunctionsHelper Helper to work with global functions */
+    protected $globalFunctionsHelper;
 
     /**
      * @param resource $filePointer Pointer to the CSV file to read
      */
     public function __construct(
         $filePointer,
-        Options $options,
-        EncodingHelper $encodingHelper
+        OptionsManagerInterface $optionsManager,
+        EncodingHelper $encodingHelper,
+        InternalEntityFactory $entityFactory,
+        GlobalFunctionsHelper $globalFunctionsHelper
     ) {
         $this->filePointer = $filePointer;
-        $this->options = $options;
+        $this->fieldDelimiter = $optionsManager->getOption(Options::FIELD_DELIMITER);
+        $this->fieldEnclosure = $optionsManager->getOption(Options::FIELD_ENCLOSURE);
+        $this->encoding = $optionsManager->getOption(Options::ENCODING);
+        $this->shouldPreserveEmptyRows = $optionsManager->getOption(Options::SHOULD_PRESERVE_EMPTY_ROWS);
         $this->encodingHelper = $encodingHelper;
+        $this->entityFactory = $entityFactory;
+        $this->globalFunctionsHelper = $globalFunctionsHelper;
     }
 
     /**
@@ -54,6 +78,7 @@ final class RowIterator implements RowIteratorInterface
      *
      * @see http://php.net/manual/en/iterator.rewind.php
      */
+    #[\ReturnTypeWillChange]
     public function rewind(): void
     {
         $this->rewindAndSkipBom();
@@ -69,9 +94,10 @@ final class RowIterator implements RowIteratorInterface
      *
      * @see http://php.net/manual/en/iterator.valid.php
      */
+    #[\ReturnTypeWillChange]
     public function valid(): bool
     {
-        return null !== $this->filePointer && !$this->hasReachedEndOfFile;
+        return $this->filePointer && !$this->hasReachedEndOfFile;
     }
 
     /**
@@ -81,9 +107,10 @@ final class RowIterator implements RowIteratorInterface
      *
      * @throws \OpenSpout\Common\Exception\EncodingConversionException If unable to convert data to UTF-8
      */
+    #[\ReturnTypeWillChange]
     public function next(): void
     {
-        $this->hasReachedEndOfFile = feof($this->filePointer);
+        $this->hasReachedEndOfFile = $this->globalFunctionsHelper->feof($this->filePointer);
 
         if (!$this->hasReachedEndOfFile) {
             $this->readDataForNextRow();
@@ -95,6 +122,7 @@ final class RowIterator implements RowIteratorInterface
      *
      * @see http://php.net/manual/en/iterator.current.php
      */
+    #[\ReturnTypeWillChange]
     public function current(): ?Row
     {
         return $this->rowBuffer;
@@ -105,27 +133,37 @@ final class RowIterator implements RowIteratorInterface
      *
      * @see http://php.net/manual/en/iterator.key.php
      */
+    #[\ReturnTypeWillChange]
     public function key(): int
     {
         return $this->numReadRows;
     }
 
     /**
+     * Cleans up what was created to iterate over the object.
+     */
+    #[\ReturnTypeWillChange]
+    public function end(): void
+    {
+        // do nothing
+    }
+
+    /**
      * This rewinds and skips the BOM if inserted at the beginning of the file
      * by moving the file pointer after it, so that it is not read.
      */
-    private function rewindAndSkipBom(): void
+    protected function rewindAndSkipBom()
     {
-        $byteOffsetToSkipBom = $this->encodingHelper->getBytesOffsetToSkipBOM($this->filePointer, $this->options->ENCODING);
+        $byteOffsetToSkipBom = $this->encodingHelper->getBytesOffsetToSkipBOM($this->filePointer, $this->encoding);
 
         // sets the cursor after the BOM (0 means no BOM, so rewind it)
-        fseek($this->filePointer, $byteOffsetToSkipBom);
+        $this->globalFunctionsHelper->fseek($this->filePointer, $byteOffsetToSkipBom);
     }
 
     /**
      * @throws \OpenSpout\Common\Exception\EncodingConversionException If unable to convert data to UTF-8
      */
-    private function readDataForNextRow(): void
+    protected function readDataForNextRow()
     {
         do {
             $rowData = $this->getNextUTF8EncodedRow();
@@ -133,10 +171,8 @@ final class RowIterator implements RowIteratorInterface
 
         if (false !== $rowData) {
             // array_map will replace NULL values by empty strings
-            $rowDataBufferAsArray = array_map('\\strval', $rowData);
-            $this->rowBuffer = new Row(array_map(static function ($cellValue) {
-                return Cell::fromValue($cellValue);
-            }, $rowDataBufferAsArray), null);
+            $rowDataBufferAsArray = array_map(function ($value) { return (string) $value; }, $rowData);
+            $this->rowBuffer = $this->entityFactory->createRowFromArray($rowDataBufferAsArray);
             ++$this->numReadRows;
         } else {
             // If we reach this point, it means end of file was reached.
@@ -146,19 +182,20 @@ final class RowIterator implements RowIteratorInterface
     }
 
     /**
-     * @param array<int, null|string>|bool $currentRowData
+     * @param array|bool $currentRowData
      *
      * @return bool Whether the data for the current row can be returned or if we need to keep reading
      */
-    private function shouldReadNextRow($currentRowData): bool
+    protected function shouldReadNextRow($currentRowData)
     {
         $hasSuccessfullyFetchedRowData = (false !== $currentRowData);
-        $hasNowReachedEndOfFile = feof($this->filePointer);
+        $hasNowReachedEndOfFile = $this->globalFunctionsHelper->feof($this->filePointer);
         $isEmptyLine = $this->isEmptyLine($currentRowData);
 
         return
             (!$hasSuccessfullyFetchedRowData && !$hasNowReachedEndOfFile)
-            || (!$this->options->SHOULD_PRESERVE_EMPTY_ROWS && $isEmptyLine);
+            || (!$this->shouldPreserveEmptyRows && $isEmptyLine)
+        ;
     }
 
     /**
@@ -166,25 +203,19 @@ final class RowIterator implements RowIteratorInterface
      * As fgetcsv() does not manage correctly encoding for non UTF-8 data,
      * we remove manually whitespace with ltrim or rtrim (depending on the order of the bytes).
      *
-     * @return array<int, null|string>|false The row for the current file pointer, encoded in UTF-8 or FALSE if nothing to read
-     *
      * @throws \OpenSpout\Common\Exception\EncodingConversionException If unable to convert data to UTF-8
+     *
+     * @return array|false The row for the current file pointer, encoded in UTF-8 or FALSE if nothing to read
      */
-    private function getNextUTF8EncodedRow(): array|false
+    protected function getNextUTF8EncodedRow()
     {
-        $encodedRowData = fgetcsv(
-            $this->filePointer,
-            self::MAX_READ_BYTES_PER_LINE,
-            $this->options->FIELD_DELIMITER,
-            $this->options->FIELD_ENCLOSURE,
-            ''
-        );
+        $encodedRowData = $this->globalFunctionsHelper->fgetcsv($this->filePointer, self::MAX_READ_BYTES_PER_LINE, $this->fieldDelimiter, $this->fieldEnclosure);
         if (false === $encodedRowData) {
             return false;
         }
 
         foreach ($encodedRowData as $cellIndex => $cellValue) {
-            switch ($this->options->ENCODING) {
+            switch ($this->encoding) {
                 case EncodingHelper::ENCODING_UTF16_LE:
                 case EncodingHelper::ENCODING_UTF32_LE:
                     // remove whitespace from the beginning of a string as fgetcsv() add extra whitespace when it try to explode non UTF-8 data
@@ -200,18 +231,18 @@ final class RowIterator implements RowIteratorInterface
                     break;
             }
 
-            $encodedRowData[$cellIndex] = $this->encodingHelper->attemptConversionToUTF8($cellValue, $this->options->ENCODING);
+            $encodedRowData[$cellIndex] = $this->encodingHelper->attemptConversionToUTF8($cellValue, $this->encoding);
         }
 
         return $encodedRowData;
     }
 
     /**
-     * @param array<int, null|string>|bool $lineData Array containing the cells value for the line
+     * @param array|bool $lineData Array containing the cells value for the line
      *
      * @return bool Whether the given line is empty
      */
-    private function isEmptyLine($lineData): bool
+    protected function isEmptyLine($lineData)
     {
         return \is_array($lineData) && 1 === \count($lineData) && null === $lineData[0];
     }

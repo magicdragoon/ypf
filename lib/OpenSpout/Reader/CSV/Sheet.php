@@ -1,18 +1,13 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\CSV;
 
 use OpenSpout\Reader\SheetInterface;
 
-/**
- * @implements SheetInterface<RowIterator>
- */
-final class Sheet implements SheetInterface
+class Sheet implements SheetInterface
 {
-    /** @var RowIterator To iterate over the CSV's rows */
-    private readonly RowIterator $rowIterator;
+    /** @var \OpenSpout\Reader\CSV\RowIterator To iterate over the CSV's rows */
+    protected $rowIterator;
 
     /**
      * @param RowIterator $rowIterator Corresponding row iterator
@@ -22,7 +17,10 @@ final class Sheet implements SheetInterface
         $this->rowIterator = $rowIterator;
     }
 
-    public function getRowIterator(): RowIterator
+    /**
+     * @return \OpenSpout\Reader\CSV\RowIterator
+     */
+    public function getRowIterator()
     {
         return $this->rowIterator;
     }
@@ -30,7 +28,7 @@ final class Sheet implements SheetInterface
     /**
      * @return int Index of the sheet
      */
-    public function getIndex(): int
+    public function getIndex()
     {
         return 0;
     }
@@ -38,7 +36,7 @@ final class Sheet implements SheetInterface
     /**
      * @return string Name of the sheet - empty string since CSV does not support that
      */
-    public function getName(): string
+    public function getName()
     {
         return '';
     }
@@ -46,7 +44,15 @@ final class Sheet implements SheetInterface
     /**
      * @return bool Always TRUE as there is only one sheet
      */
-    public function isActive(): bool
+    public function isActive()
+    {
+        return true;
+    }
+
+    /**
+     * @return bool Always TRUE as the only sheet is always visible
+     */
+    public function isVisible()
     {
         return true;
     }

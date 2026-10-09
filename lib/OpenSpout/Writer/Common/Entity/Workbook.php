@@ -1,19 +1,17 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\Common\Entity;
 
 /**
  * Entity describing a workbook.
  */
-final class Workbook
+class Workbook
 {
     /** @var Worksheet[] List of the workbook's sheets */
-    private array $worksheets = [];
+    private $worksheets = [];
 
     /** @var string Timestamp based unique ID identifying the workbook */
-    private readonly string $internalId;
+    private $internalId;
 
     /**
      * Workbook constructor.
@@ -26,7 +24,7 @@ final class Workbook
     /**
      * @return Worksheet[]
      */
-    public function getWorksheets(): array
+    public function getWorksheets()
     {
         return $this->worksheets;
     }
@@ -34,12 +32,15 @@ final class Workbook
     /**
      * @param Worksheet[] $worksheets
      */
-    public function setWorksheets(array $worksheets): void
+    public function setWorksheets($worksheets)
     {
         $this->worksheets = $worksheets;
     }
 
-    public function getInternalId(): string
+    /**
+     * @return string
+     */
+    public function getInternalId()
     {
         return $this->internalId;
     }

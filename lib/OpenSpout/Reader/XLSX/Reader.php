@@ -1,60 +1,61 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\XLSX;
 
 use OpenSpout\Common\Exception\IOException;
-use OpenSpout\Common\Helper\Escaper\XLSX;
-use OpenSpout\Reader\AbstractReader;
-use OpenSpout\Reader\XLSX\Manager\SharedStringsCaching\CachingStrategyFactory;
-use OpenSpout\Reader\XLSX\Manager\SharedStringsCaching\CachingStrategyFactoryInterface;
-use OpenSpout\Reader\XLSX\Manager\SharedStringsCaching\MemoryLimit;
-use OpenSpout\Reader\XLSX\Manager\SharedStringsManager;
-use OpenSpout\Reader\XLSX\Manager\SheetManager;
-use OpenSpout\Reader\XLSX\Manager\WorkbookRelationshipsManager;
-use ZipArchive;
+use OpenSpout\Common\Helper\GlobalFunctionsHelper;
+use OpenSpout\Common\Manager\OptionsManagerInterface;
+use OpenSpout\Reader\Common\Creator\InternalEntityFactoryInterface;
+use OpenSpout\Reader\Common\Entity\Options;
+use OpenSpout\Reader\ReaderAbstract;
+use OpenSpout\Reader\XLSX\Creator\InternalEntityFactory;
+use OpenSpout\Reader\XLSX\Creator\ManagerFactory;
 
 /**
- * @extends AbstractReader<SheetIterator>
+ * This class provides support to read data from a XLSX file.
  */
-final class Reader extends AbstractReader
+class Reader extends ReaderAbstract
 {
-    private ZipArchive $zip;
+    /** @var ManagerFactory */
+    protected $managerFactory;
 
-    /** @var SharedStringsManager Manages shared strings */
-    private SharedStringsManager $sharedStringsManager;
+    /** @var \ZipArchive */
+    protected $zip;
+
+    /** @var \OpenSpout\Reader\XLSX\Manager\SharedStringsManager Manages shared strings */
+    protected $sharedStringsManager;
 
     /** @var SheetIterator To iterator over the XLSX sheets */
-    private SheetIterator $sheetIterator;
-
-    private readonly Options $options;
-    private readonly CachingStrategyFactoryInterface $cachingStrategyFactory;
+    protected $sheetIterator;
 
     public function __construct(
-        ?Options $options = null,
-        ?CachingStrategyFactoryInterface $cachingStrategyFactory = null
+        OptionsManagerInterface $optionsManager,
+        GlobalFunctionsHelper $globalFunctionsHelper,
+        InternalEntityFactoryInterface $entityFactory,
+        ManagerFactory $managerFactory
     ) {
-        $this->options = $options ?? new Options();
-
-        if (null === $cachingStrategyFactory) {
-            $memoryLimit = \ini_get('memory_limit');
-            $cachingStrategyFactory = new CachingStrategyFactory(new MemoryLimit($memoryLimit));
-        }
-        $this->cachingStrategyFactory = $cachingStrategyFactory;
+        parent::__construct($optionsManager, $globalFunctionsHelper, $entityFactory);
+        $this->managerFactory = $managerFactory;
     }
 
-    public function getSheetIterator(): SheetIterator
+    /**
+     * @param string $tempFolder Temporary folder where the temporary files will be created
+     *
+     * @return Reader
+     */
+    public function setTempFolder($tempFolder)
     {
-        $this->ensureStreamOpened();
+        $this->optionsManager->setOption(Options::TEMP_FOLDER, $tempFolder);
 
-        return $this->sheetIterator;
+        return $this;
     }
 
     /**
      * Returns whether stream wrappers are supported.
+     *
+     * @return bool
      */
-    protected function doesSupportStreamWrapper(): bool
+    protected function doesSupportStreamWrapper()
     {
         return false;
     }
@@ -69,42 +70,53 @@ final class Reader extends AbstractReader
      * @throws \OpenSpout\Common\Exception\IOException            If the file at the given path or its content cannot be read
      * @throws \OpenSpout\Reader\Exception\NoSheetsFoundException If there are no sheets in the file
      */
-    protected function openReader(string $filePath): void
+    protected function openReader($filePath)
     {
-        $this->zip = new ZipArchive();
+        /** @var InternalEntityFactory $entityFactory */
+        $entityFactory = $this->entityFactory;
 
-        if (true !== $this->zip->open($filePath)) {
+        $this->zip = $entityFactory->createZipArchive();
+
+        if (true === $this->zip->open($filePath)) {
+            $tempFolder = $this->optionsManager->getOption(Options::TEMP_FOLDER);
+            $this->sharedStringsManager = $this->managerFactory->createSharedStringsManager($filePath, $tempFolder, $entityFactory);
+
+            if ($this->sharedStringsManager->hasSharedStrings()) {
+                // Extracts all the strings from the sheets for easy access in the future
+                $this->sharedStringsManager->extractSharedStrings();
+            }
+
+            $this->sheetIterator = $entityFactory->createSheetIterator(
+                $filePath,
+                $this->optionsManager,
+                $this->sharedStringsManager
+            );
+        } else {
             throw new IOException("Could not open {$filePath} for reading.");
         }
+    }
 
-        $this->sharedStringsManager = new SharedStringsManager(
-            $filePath,
-            $this->options,
-            new WorkbookRelationshipsManager($filePath),
-            $this->cachingStrategyFactory
-        );
-
-        if ($this->sharedStringsManager->hasSharedStrings()) {
-            // Extracts all the strings from the sheets for easy access in the future
-            $this->sharedStringsManager->extractSharedStrings();
-        }
-
-        $this->sheetIterator = new SheetIterator(
-            new SheetManager(
-                $filePath,
-                $this->options,
-                $this->sharedStringsManager,
-                new XLSX()
-            )
-        );
+    /**
+     * Returns an iterator to iterate over sheets.
+     *
+     * @return SheetIterator To iterate over sheets
+     */
+    protected function getConcreteSheetIterator()
+    {
+        return $this->sheetIterator;
     }
 
     /**
      * Closes the reader. To be used after reading the file.
      */
-    protected function closeReader(): void
+    protected function closeReader()
     {
-        $this->zip->close();
-        $this->sharedStringsManager->cleanup();
+        if (null !== $this->zip) {
+            $this->zip->close();
+        }
+
+        if (null !== $this->sharedStringsManager) {
+            $this->sharedStringsManager->cleanup();
+        }
     }
 }

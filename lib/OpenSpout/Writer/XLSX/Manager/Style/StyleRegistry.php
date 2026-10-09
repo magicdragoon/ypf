@@ -1,23 +1,20 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\XLSX\Manager\Style;
 
 use OpenSpout\Common\Entity\Style\Style;
-use OpenSpout\Writer\Common\Manager\Style\AbstractStyleRegistry as CommonStyleRegistry;
 
 /**
- * @internal
+ * Registry for all used styles.
  */
-class StyleRegistry extends CommonStyleRegistry
+class StyleRegistry extends \OpenSpout\Writer\Common\Manager\Style\StyleRegistry
 {
     /**
-     * Mapping between built-in format and the associated numFmtId.
-     *
      * @see https://msdn.microsoft.com/en-us/library/ff529597(v=office.12).aspx
+     *
+     * @var array Mapping between built-in format and the associated numFmtId
      */
-    private const builtinNumFormatToIdMapping = [
+    protected static $builtinNumFormatToIdMapping = [
         'General' => 0,
         '0' => 1,
         '0.00' => 2,
@@ -67,11 +64,15 @@ class StyleRegistry extends CommonStyleRegistry
         't# ??/??' => 70,
     ];
 
-    /** @var array<string, int> */
-    private array $registeredFormats = [];
+    /**
+     * @var array
+     */
+    protected $registeredFormats = [];
 
-    /** @var array<int, int> [STYLE_ID] => [FORMAT_ID] maps a style to a format declaration */
-    private array $styleIdToFormatsMappingTable = [];
+    /**
+     * @var array [STYLE_ID] => [FORMAT_ID] maps a style to a format declaration
+     */
+    protected $styleIdToFormatsMappingTable = [];
 
     /**
      * If the numFmtId is lower than 0xA4 (164 in decimal)
@@ -80,13 +81,17 @@ class StyleRegistry extends CommonStyleRegistry
      *
      * @var int the fill index counter for custom fills
      */
-    private int $formatIndex = 164;
+    protected $formatIndex = 164;
 
-    /** @var array<string, int> */
-    private array $registeredFills = [];
+    /**
+     * @var array
+     */
+    protected $registeredFills = [];
 
-    /** @var array<int, int> [STYLE_ID] => [FILL_ID] maps a style to a fill declaration */
-    private array $styleIdToFillMappingTable = [];
+    /**
+     * @var array [STYLE_ID] => [FILL_ID] maps a style to a fill declaration
+     */
+    protected $styleIdToFillMappingTable = [];
 
     /**
      * Excel preserves two default fills with index 0 and 1
@@ -94,18 +99,24 @@ class StyleRegistry extends CommonStyleRegistry
      *
      * @var int the fill index counter for custom fills
      */
-    private int $fillIndex = 2;
+    protected $fillIndex = 2;
 
-    /** @var array<string, int> */
-    private array $registeredBorders = [];
+    /**
+     * @var array
+     */
+    protected $registeredBorders = [];
 
-    /** @var array<int, int> [STYLE_ID] => [BORDER_ID] maps a style to a border declaration */
-    private array $styleIdToBorderMappingTable = [];
+    /**
+     * @var array [STYLE_ID] => [BORDER_ID] maps a style to a border declaration
+     */
+    protected $styleIdToBorderMappingTable = [];
 
     /**
      * XLSX specific operations on the registered styles.
+     *
+     * @return Style
      */
-    public function registerStyle(Style $style): Style
+    public function registerStyle(Style $style)
     {
         if ($style->isRegistered()) {
             return $style;
@@ -120,49 +131,59 @@ class StyleRegistry extends CommonStyleRegistry
     }
 
     /**
+     * @param int $styleId
+     *
      * @return null|int Format ID associated to the given style ID
      */
-    public function getFormatIdForStyleId(int $styleId): ?int
+    public function getFormatIdForStyleId($styleId)
     {
         return $this->styleIdToFormatsMappingTable[$styleId] ?? null;
     }
 
     /**
+     * @param int $styleId
+     *
      * @return null|int Fill ID associated to the given style ID
      */
-    public function getFillIdForStyleId(int $styleId): ?int
+    public function getFillIdForStyleId($styleId)
     {
-        return $this->styleIdToFillMappingTable[$styleId] ?? null;
+        return (isset($this->styleIdToFillMappingTable[$styleId])) ?
+            $this->styleIdToFillMappingTable[$styleId] :
+            null;
     }
 
     /**
+     * @param int $styleId
+     *
      * @return null|int Fill ID associated to the given style ID
      */
-    public function getBorderIdForStyleId(int $styleId): ?int
+    public function getBorderIdForStyleId($styleId)
     {
-        return $this->styleIdToBorderMappingTable[$styleId] ?? null;
+        return (isset($this->styleIdToBorderMappingTable[$styleId])) ?
+            $this->styleIdToBorderMappingTable[$styleId] :
+            null;
     }
 
     /**
-     * @return array<string, int>
+     * @return array
      */
-    public function getRegisteredFills(): array
+    public function getRegisteredFills()
     {
         return $this->registeredFills;
     }
 
     /**
-     * @return array<string, int>
+     * @return array
      */
-    public function getRegisteredBorders(): array
+    public function getRegisteredBorders()
     {
         return $this->registeredBorders;
     }
 
     /**
-     * @return array<string, int>
+     * @return array
      */
-    public function getRegisteredFormats(): array
+    public function getRegisteredFormats()
     {
         return $this->registeredFormats;
     }
@@ -170,12 +191,12 @@ class StyleRegistry extends CommonStyleRegistry
     /**
      * Register a format definition.
      */
-    private function registerFormat(Style $style): void
+    protected function registerFormat(Style $style)
     {
         $styleId = $style->getId();
 
         $format = $style->getFormat();
-        if (null !== $format) {
+        if ($format) {
             $isFormatRegistered = isset($this->registeredFormats[$format]);
 
             // We need to track the already registered format definitions
@@ -186,7 +207,7 @@ class StyleRegistry extends CommonStyleRegistry
             } else {
                 $this->registeredFormats[$format] = $styleId;
 
-                $id = self::builtinNumFormatToIdMapping[$format] ?? $this->formatIndex++;
+                $id = self::$builtinNumFormatToIdMapping[$format] ?? $this->formatIndex++;
                 $this->styleIdToFormatsMappingTable[$styleId] = $id;
             }
         } else {
@@ -199,7 +220,7 @@ class StyleRegistry extends CommonStyleRegistry
     /**
      * Register a fill definition.
      */
-    private function registerFill(Style $style): void
+    private function registerFill(Style $style)
     {
         $styleId = $style->getId();
 
@@ -207,7 +228,7 @@ class StyleRegistry extends CommonStyleRegistry
         // so $backgroundColor is a scalar value (RGB Color)
         $backgroundColor = $style->getBackgroundColor();
 
-        if (null !== $backgroundColor) {
+        if ($backgroundColor) {
             $isBackgroundColorRegistered = isset($this->registeredFills[$backgroundColor]);
 
             // We need to track the already registered background definitions
@@ -229,11 +250,12 @@ class StyleRegistry extends CommonStyleRegistry
     /**
      * Register a border definition.
      */
-    private function registerBorder(Style $style): void
+    private function registerBorder(Style $style)
     {
         $styleId = $style->getId();
 
-        if (null !== ($border = $style->getBorder())) {
+        if ($style->shouldApplyBorder()) {
+            $border = $style->getBorder();
             $serializedBorder = serialize($border);
 
             $isBorderAlreadyRegistered = isset($this->registeredBorders[$serializedBorder]);

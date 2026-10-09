@@ -1,54 +1,47 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\ODS\Manager;
 
-use OpenSpout\Writer\Common\Entity\Workbook;
-use OpenSpout\Writer\Common\Manager\AbstractWorkbookManager;
-use OpenSpout\Writer\Common\Manager\Style\StyleMerger;
+use OpenSpout\Writer\Common\Entity\Sheet;
+use OpenSpout\Writer\Common\Manager\WorkbookManagerAbstract;
 use OpenSpout\Writer\ODS\Helper\FileSystemHelper;
 use OpenSpout\Writer\ODS\Manager\Style\StyleManager;
-use OpenSpout\Writer\ODS\Options;
 
 /**
- * @internal
- *
- * @property WorksheetManager $worksheetManager
- * @property FileSystemHelper $fileSystemHelper
- * @property StyleManager     $styleManager
+ * ODS workbook manager, providing the interfaces to work with workbook.
  */
-final class WorkbookManager extends AbstractWorkbookManager
+class WorkbookManager extends WorkbookManagerAbstract
 {
     /**
      * Maximum number of rows a ODS sheet can contain.
      *
      * @see https://ask.libreoffice.org/en/question/8631/upper-limit-to-number-of-rows-in-calc/
      */
-    private static int $maxRowsPerWorksheet = 1048576;
+    protected static $maxRowsPerWorksheet = 1048576;
 
-    public function __construct(
-        Workbook $workbook,
-        Options $options,
-        WorksheetManager $worksheetManager,
-        StyleManager $styleManager,
-        StyleMerger $styleMerger,
-        FileSystemHelper $fileSystemHelper
-    ) {
-        parent::__construct(
-            $workbook,
-            $options,
-            $worksheetManager,
-            $styleManager,
-            $styleMerger,
-            $fileSystemHelper
-        );
+    /** @var WorksheetManager Object used to manage worksheets */
+    protected $worksheetManager;
+
+    /** @var FileSystemHelper Helper to perform file system operations */
+    protected $fileSystemHelper;
+
+    /** @var StyleManager Manages styles */
+    protected $styleManager;
+
+    /**
+     * @return string The file path where the data for the given sheet will be stored
+     */
+    public function getWorksheetFilePath(Sheet $sheet)
+    {
+        $sheetsContentTempFolder = $this->fileSystemHelper->getSheetsContentTempFolder();
+
+        return $sheetsContentTempFolder.'/sheet'.$sheet->getIndex().'.xml';
     }
 
     /**
      * @return int Maximum number of rows/columns a sheet can contain
      */
-    protected function getMaxRowsPerWorksheet(): int
+    protected function getMaxRowsPerWorksheet()
     {
         return self::$maxRowsPerWorksheet;
     }
@@ -58,7 +51,7 @@ final class WorkbookManager extends AbstractWorkbookManager
      *
      * @param resource $finalFilePointer Pointer to the spreadsheet that will be created
      */
-    protected function writeAllFilesToDiskAndZipThem($finalFilePointer): void
+    protected function writeAllFilesToDiskAndZipThem($finalFilePointer)
     {
         $worksheets = $this->getWorksheets();
         $numWorksheets = \count($worksheets);

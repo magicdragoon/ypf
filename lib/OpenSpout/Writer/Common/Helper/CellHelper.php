@@ -1,16 +1,14 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\Common\Helper;
 
 /**
- * @internal
+ * This class provides helper functions when working with cells.
  */
-final class CellHelper
+class CellHelper
 {
-    /** @var array<int, string> Cache containing the mapping column index => column letters */
-    private static array $columnIndexToColumnLettersCache = [];
+    /** @var array Cache containing the mapping column index => column letters */
+    private static $columnIndexToColumnLettersCache = [];
 
     /**
      * Returns the column letters (base 26) associated to the base 10 column index.
@@ -22,7 +20,7 @@ final class CellHelper
      *
      * @return string The associated cell index ('A', 'BC', ...)
      */
-    public static function getColumnLettersFromColumnIndex(int $columnIndexZeroBased): string
+    public static function getColumnLettersFromColumnIndex($columnIndexZeroBased)
     {
         $originalColumnIndex = $columnIndexZeroBased;
 

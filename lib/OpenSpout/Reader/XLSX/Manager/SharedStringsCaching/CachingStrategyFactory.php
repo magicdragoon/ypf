@@ -1,13 +1,10 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\XLSX\Manager\SharedStringsCaching;
 
-/**
- * @internal
- */
-final class CachingStrategyFactory implements CachingStrategyFactoryInterface
+use OpenSpout\Reader\XLSX\Creator\HelperFactory;
+
+class CachingStrategyFactory
 {
     /**
      * The memory amount needed to store a string was obtained empirically from this data:.
@@ -50,29 +47,23 @@ final class CachingStrategyFactory implements CachingStrategyFactoryInterface
      */
     public const MAX_NUM_STRINGS_PER_TEMP_FILE = 10000;
 
-    private readonly MemoryLimit $memoryLimit;
-
-    public function __construct(MemoryLimit $memoryLimit)
-    {
-        $this->memoryLimit = $memoryLimit;
-    }
-
     /**
      * Returns the best caching strategy, given the number of unique shared strings
      * and the amount of memory available.
      *
-     * @param null|int $sharedStringsUniqueCount Number of unique shared strings (NULL if unknown)
-     * @param string   $tempFolder               Temporary folder where the temporary files to store shared strings will be stored
+     * @param null|int      $sharedStringsUniqueCount Number of unique shared strings (NULL if unknown)
+     * @param string        $tempFolder               Temporary folder where the temporary files to store shared strings will be stored
+     * @param HelperFactory $helperFactory            Factory to create helpers
      *
      * @return CachingStrategyInterface The best caching strategy
      */
-    public function createBestCachingStrategy(?int $sharedStringsUniqueCount, string $tempFolder): CachingStrategyInterface
+    public function createBestCachingStrategy($sharedStringsUniqueCount, $tempFolder, $helperFactory)
     {
         if ($this->isInMemoryStrategyUsageSafe($sharedStringsUniqueCount)) {
             return new InMemoryStrategy($sharedStringsUniqueCount);
         }
 
-        return new FileBasedStrategy($tempFolder, self::MAX_NUM_STRINGS_PER_TEMP_FILE);
+        return new FileBasedStrategy($tempFolder, self::MAX_NUM_STRINGS_PER_TEMP_FILE, $helperFactory);
     }
 
     /**
@@ -80,15 +71,17 @@ final class CachingStrategyFactory implements CachingStrategyFactoryInterface
      * and the amount of memory available.
      *
      * @param null|int $sharedStringsUniqueCount Number of unique shared strings (NULL if unknown)
+     *
+     * @return bool
      */
-    private function isInMemoryStrategyUsageSafe(?int $sharedStringsUniqueCount): bool
+    protected function isInMemoryStrategyUsageSafe($sharedStringsUniqueCount)
     {
         // if the number of shared strings in unknown, do not use "in memory" strategy
         if (null === $sharedStringsUniqueCount) {
             return false;
         }
 
-        $memoryAvailable = $this->memoryLimit->getMemoryLimitInKB();
+        $memoryAvailable = $this->getMemoryLimitInKB();
 
         if (-1 === (int) $memoryAvailable) {
             // if cannot get memory limit or if memory limit set as unlimited, don't trust and play safe
@@ -99,5 +92,50 @@ final class CachingStrategyFactory implements CachingStrategyFactoryInterface
         }
 
         return $isInMemoryStrategyUsageSafe;
+    }
+
+    /**
+     * Returns the PHP "memory_limit" in Kilobytes.
+     *
+     * @return float
+     */
+    protected function getMemoryLimitInKB()
+    {
+        $memoryLimitFormatted = $this->getMemoryLimitFromIni();
+        $memoryLimitFormatted = strtolower(trim($memoryLimitFormatted));
+
+        // No memory limit
+        if ('-1' === $memoryLimitFormatted) {
+            return -1;
+        }
+
+        if (preg_match('/(\d+)([bkmgt])b?/', $memoryLimitFormatted, $matches)) {
+            $amount = (int) ($matches[1]);
+            $unit = $matches[2];
+
+            switch ($unit) {
+                case 'b': return $amount / 1024;
+
+                case 'k': return $amount;
+
+                case 'm': return $amount * 1024;
+
+                case 'g': return $amount * 1024 * 1024;
+
+                case 't': return $amount * 1024 * 1024 * 1024;
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * Returns the formatted "memory_limit" value.
+     *
+     * @return string
+     */
+    protected function getMemoryLimitFromIni()
+    {
+        return ini_get('memory_limit');
     }
 }

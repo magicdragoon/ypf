@@ -1,15 +1,13 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\Common\Manager\Style;
 
 use OpenSpout\Common\Entity\Style\Style;
 
 /**
- * @internal
+ * Takes care of merging styles together.
  */
-final class StyleMerger
+class StyleMerger
 {
     /**
      * Merges the current style with the given style, using the given style as a base. This means that:
@@ -21,7 +19,7 @@ final class StyleMerger
      *
      * @return Style New style corresponding to the merge of the 2 styles
      */
-    public function merge(Style $style, Style $baseStyle): Style
+    public function merge(Style $style, Style $baseStyle)
     {
         $mergedStyle = clone $style;
 
@@ -35,7 +33,7 @@ final class StyleMerger
     /**
      * @param Style $styleToUpdate (passed as reference)
      */
-    private function mergeFontStyles(Style $styleToUpdate, Style $style, Style $baseStyle): void
+    private function mergeFontStyles(Style $styleToUpdate, Style $style, Style $baseStyle)
     {
         if (!$style->hasSetFontBold() && $baseStyle->isFontBold()) {
             $styleToUpdate->setFontBold();
@@ -54,7 +52,7 @@ final class StyleMerger
     /**
      * @param Style $styleToUpdate Style to update (passed as reference)
      */
-    private function mergeOtherFontProperties(Style $styleToUpdate, Style $style, Style $baseStyle): void
+    private function mergeOtherFontProperties(Style $styleToUpdate, Style $style, Style $baseStyle)
     {
         if (!$style->hasSetFontSize() && Style::DEFAULT_FONT_SIZE !== $baseStyle->getFontSize()) {
             $styleToUpdate->setFontSize($baseStyle->getFontSize());
@@ -70,10 +68,10 @@ final class StyleMerger
     /**
      * @param Style $styleToUpdate Style to update (passed as reference)
      */
-    private function mergeCellProperties(Style $styleToUpdate, Style $style, Style $baseStyle): void
+    private function mergeCellProperties(Style $styleToUpdate, Style $style, Style $baseStyle)
     {
-        if (!$style->hasSetWrapText() && $baseStyle->hasSetWrapText()) {
-            $styleToUpdate->setShouldWrapText($baseStyle->shouldWrapText());
+        if (!$style->hasSetWrapText() && $baseStyle->shouldWrapText()) {
+            $styleToUpdate->setShouldWrapText();
         }
         if (!$style->hasSetShrinkToFit() && $baseStyle->shouldShrinkToFit()) {
             $styleToUpdate->setShouldShrinkToFit();
@@ -81,17 +79,14 @@ final class StyleMerger
         if (!$style->hasSetCellAlignment() && $baseStyle->shouldApplyCellAlignment()) {
             $styleToUpdate->setCellAlignment($baseStyle->getCellAlignment());
         }
-        if (!$style->hasSetCellVerticalAlignment() && $baseStyle->shouldApplyCellVerticalAlignment()) {
-            $styleToUpdate->setCellVerticalAlignment($baseStyle->getCellVerticalAlignment());
+        if (null === $style->getBorder() && $baseStyle->shouldApplyBorder()) {
+            $styleToUpdate->setBorder($baseStyle->getBorder());
         }
-        if (null === $style->getBorder() && null !== ($border = $baseStyle->getBorder())) {
-            $styleToUpdate->setBorder($border);
+        if (null === $style->getFormat() && $baseStyle->shouldApplyFormat()) {
+            $styleToUpdate->setFormat($baseStyle->getFormat());
         }
-        if (null === $style->getFormat() && null !== ($format = $baseStyle->getFormat())) {
-            $styleToUpdate->setFormat($format);
-        }
-        if (null === $style->getBackgroundColor() && null !== ($bgColor = $baseStyle->getBackgroundColor())) {
-            $styleToUpdate->setBackgroundColor($bgColor);
+        if (!$style->shouldApplyBackgroundColor() && $baseStyle->shouldApplyBackgroundColor()) {
+            $styleToUpdate->setBackgroundColor($baseStyle->getBackgroundColor());
         }
     }
 }

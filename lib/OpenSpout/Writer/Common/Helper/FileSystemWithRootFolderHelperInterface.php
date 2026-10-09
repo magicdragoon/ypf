@@ -1,13 +1,12 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Writer\Common\Helper;
 
 use OpenSpout\Common\Helper\FileSystemHelperInterface;
 
 /**
- * @internal
+ * This interface describes helper functions to help with the file system operations
+ * like files/folders creation & deletion.
  */
 interface FileSystemWithRootFolderHelperInterface extends FileSystemHelperInterface
 {
@@ -16,9 +15,10 @@ interface FileSystemWithRootFolderHelperInterface extends FileSystemHelperInterf
      *
      * @throws \OpenSpout\Common\Exception\IOException If unable to create at least one of the base folders
      */
-    public function createBaseFilesAndFolders(): void;
+    public function createBaseFilesAndFolders();
 
-    public function getRootFolder(): string;
-
-    public function getSheetsContentTempFolder(): string;
+    /**
+     * @return string
+     */
+    public function getRootFolder();
 }

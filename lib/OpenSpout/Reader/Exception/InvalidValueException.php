@@ -1,22 +1,29 @@
 <?php
 
-declare(strict_types=1);
-
 namespace OpenSpout\Reader\Exception;
 
 use Throwable;
 
-final class InvalidValueException extends ReaderException
+class InvalidValueException extends ReaderException
 {
-    private readonly string $invalidValue;
+    /** @var mixed */
+    private $invalidValue;
 
-    public function __construct(string $invalidValue, string $message = '', int $code = 0, ?Throwable $previous = null)
+    /**
+     * @param mixed  $invalidValue
+     * @param string $message
+     * @param int    $code
+     */
+    public function __construct($invalidValue, $message = '', $code = 0, Throwable $previous = null)
     {
         $this->invalidValue = $invalidValue;
         parent::__construct($message, $code, $previous);
     }
 
-    public function getInvalidValue(): string
+    /**
+     * @return mixed
+     */
+    public function getInvalidValue()
     {
         return $this->invalidValue;
     }
