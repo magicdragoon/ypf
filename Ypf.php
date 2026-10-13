@@ -185,7 +185,36 @@ class Ypf
             if (count($env) !== 2) {
                 continue;
             }
-            $envs[$env[0]] = $env[1];
+            $env[0] = trim($env[0]);
+            if (empty($env[0])) {
+                continue;
+            }
+            $env[1] = trim($env[1]);
+            if (empty($env[1])) {
+                continue;
+            }
+
+            $pos = strpos($env[0], '[');
+            if ($pos === false) {
+                $envs[$env[0]] = $env[1];
+                continue;
+            }
+
+            $posEnd = strpos($env[0], ']');
+            if ($posEnd === false) {
+                continue;
+            }
+
+            $envKey = substr($env[0], 0, $pos);
+            if (!isset($envs[$envKey])) {
+                $envs[$envKey] = [];
+            }
+            $arrKey = trim(substr($env[0], $pos + 1, $posEnd - $pos - 1));
+            if (empty($arrKey)) {
+                $envs[$envKey][] = $env[1];
+            } else {
+                $envs[$envKey][$arrKey] = $env[1];
+            }
         }
 
         $config .= "const ENV = " . var_output($envs) . ";\n";
@@ -236,6 +265,15 @@ class Ypf
             'password' => env('DB_PASSWORD'),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
         ]);
+
+        switch (env('CACHE_TYPE', 'file')) {
+            case 'apcu':
+                Cache::setCache(new ApcuCache());
+                break;
+            default:
+                Cache::setCache(new FileCache());
+                break;
+        }
 
         Context::set('now', new Time($_SERVER['REQUEST_TIME'] ?? time()));
         Context::set('today', new Time(Date::start(Context::now()->timestamp())));
@@ -483,7 +521,7 @@ class Request
         //     }
         // }
         foreach ($headers as $key => $value) {
-            if (array_key_exists($key, $_SERVER)) {
+            if (isset($_SERVER[$key])) {
                 $this->header[$value] = $_SERVER[$key];
             }
         }
@@ -3714,27 +3752,104 @@ abstract class Command
 class Cache
 {
     /**
-     * 设置缓存
-     * @param string $key
-     * @param mixed $value
+     * 缓存实例
+     * @var CacheInterface|null
      */
-    public static function set($key, $value)
-    {
-        file_put_contents(storage_path('cache/' . $key . '.php'), serialize($value));
+    private static $cache = null;
+
+    public static function setCache(CacheInterface $cache) {
+        if (empty(self::$cache)) {
+            self::$cache = $cache;
+        }
     }
 
     /**
      * 获取缓存
      * @param string $key
+     * @param mixed|null $default
      * @return mixed|null
      */
-    public static function get($key)
-    {
-        if (!file_exists(storage_path('cache/' . $key . '.php'))) {
-            return null;
-        }
-        return unserialize(file_get_contents(storage_path('cache/' . $key . '.php')));
+    public static function get($key, $default = null) {
+        return self::$cache->get($key, $default);
     }
+
+    /**
+     * 设置缓存
+     * @param string $key
+     * @param mixed $value
+     * @param null|int|\DateInterval $ttl
+     * @return bool
+     */
+    public static function set($key, $value, $ttl = null) {
+        return self::$cache->set($key, $value, $ttl);
+    }
+
+    /**
+     * 删除缓存
+     * @param string $key
+     * @return bool
+     */
+    public static function delete($key) {
+        return self::$cache->delete($key);
+    }
+
+    /**
+     * 清空缓存
+     * @return bool
+     */
+    public static function clear() {
+        return self::$cache->clear();
+    }
+
+    /**
+     * 检查缓存是否存在
+     * @param string $key
+     * @return bool
+     */
+    public static function has($key) {
+        return self::$cache->has($key);
+    }
+
+}
+
+interface CacheInterface
+{
+    /**
+     * 获取缓存
+     * @param string $key
+     * @param mixed|null $default
+     * @return mixed|null
+     */
+    public function get($key, $default = null);
+
+    /**
+     * 设置缓存
+     * @param string $key
+     * @param mixed $value
+     * @param null|int|\DateInterval $ttl
+     * @return bool
+     */
+    public function set($key, $value, $ttl = null);
+
+    /**
+     * 删除缓存
+     * @param string $key
+     * @return bool
+     */
+    public function delete($key);
+
+    /**
+     * 清空缓存
+     * @return bool
+     */
+    public function clear();
+
+    /**
+     * 检查缓存是否存在
+     * @param string $key
+     * @return bool
+     */
+    public function has($key);
 }
 
 /**
@@ -3902,6 +4017,7 @@ class Time
 class Logger
 {
     public const PATH = APP_PATH . '/storage/log/';
+    private static $socket = null;
 
     /**
      * 记录信息日志
@@ -3932,16 +4048,66 @@ class Logger
 
     /**
      * 记录日志
-     * @param string $file
+     * @param string $level
      * @param string $msg
      */
-    public static function log($file, $msg)
+    public static function log($level, $msg)
+    {
+        if (env('LOG_DRIVER', 'file') == 'swoole') {
+            // Swoole日志记录
+            try {
+                // 建立远程链接
+                if (self::$socket === null || !is_resource(self::$socket) || feof(self::$socket)) {
+                    $remoteSocket = env('LOG_SWOOLE_SOCKET');
+                    if (empty($remoteSocket)) {
+                        throw new AppException(9016000001, 'LOG_SWOOLE_SOCKET is empty');
+                    }
+                    // 连接超时
+                    $timeout = floatval(env('LOG_SWOOLE_TIMEOUT', '0.5'));
+
+                    // STREAM_CLIENT_PERSISTENT 启用持久连接（等同于 Redis 的 pconnect）
+                    self::$socket = stream_socket_client(
+                        $remoteSocket,
+                        $errno,
+                        $errstr,
+                        $timeout,
+                        STREAM_CLIENT_CONNECT | STREAM_CLIENT_PERSISTENT
+                    );
+
+                    // 设置写入超时
+                    if (self::$socket) {
+                        stream_set_timeout(self::$socket, 0, intval($timeout * 1000000));
+                    } else {
+                        throw new AppException(9016000002, 'LOG_SWOOLE_SOCKET connect failed');
+                    }
+                }
+
+                fwrite(self::$socket, json([
+                    'level' => $level,
+                    'msg' => $msg,
+                    'timestamp' => Ypf::now()->timestamp(),
+                ]) . "\n");
+            } catch (\Exception $e) {
+                // 有错误则降级到文件日志
+                self::logFile($level, $msg);
+            }
+        } else {
+            self::logFile($level, $msg);
+        }
+    }
+
+    /**
+     * 记录日志到文件
+     * @param string $level
+     * @param string $msg
+     */
+    public static function logFile($level, $msg)
     {
         $path = self::PATH . date('Y-m-d');
         if (!is_dir($path)) {
             mkdir($path, 0766, true);
         }
-        file_put_contents($path . '/' . $file . '.log', $msg . "\n", FILE_APPEND);
+        file_put_contents($path . '/' . $level . '.log', $msg . "\n", FILE_APPEND);
     }
 }
 
@@ -4644,6 +4810,230 @@ class JWT
 }
 
 /**
+ * @id 9023
+ * APCu 缓存类
+ */
+class ApcuCache implements CacheInterface
+{
+    public function __construct()
+    {
+        if (!function_exists('apcu_add')) {
+            throw new Exception('apcu扩展未加载');
+        }
+    }
+
+    /**
+     * 获取缓存
+     * @param string $key
+     * @return mixed|null
+     */
+    public function get($key, $default = null)
+    {
+        if (!apcu_exists($key)) {
+            return $default;
+        }
+        return apcu_fetch($key);
+    }
+
+    /**
+     * 设置缓存
+     * @param string $key
+     * @param mixed $value
+     * @return bool
+     */
+    public function set($key, $value, $ttl = null)
+    {
+        return apcu_add($key, $value, $ttl);
+    }
+
+    /**
+     * 删除缓存
+     * @param string $key
+     * @return bool
+     */
+    public function delete($key)
+    {
+        return apcu_delete($key);
+    }
+
+    /**
+     * 清空缓存
+     * @return bool
+     */
+    public function clear()
+    {
+        return apcu_clear_cache();
+    }
+
+    /**
+     * 检查缓存是否存在
+     * @param string $key
+     * @return bool
+     */
+    public function has($key)
+    {
+        return apcu_exists($key);
+    }
+}
+
+/**
+ * @id 9024
+ * 文件缓存类
+ */
+class FileCache implements CacheInterface
+{
+    /**
+     * 获取缓存
+     * @param string $key
+     * @return mixed|null
+     */
+    public function get($key, $default = null)
+    {
+        if (!file_exists(storage_path('cache/' . $key . '.php'))) {
+            return null;
+        }
+        return unserialize(file_get_contents(storage_path('cache/' . $key . '.php')));
+    }
+
+    /**
+     * 设置缓存
+     * @param string $key
+     * @param mixed $value
+     * @return bool
+     */
+    public function set($key, $value, $ttl = null)
+    {
+        return file_put_contents(storage_path('cache/' . $key . '.php'), serialize($value)) !== false;
+    }
+
+    /**
+     * 删除缓存
+     * @param string $key
+     * @return bool
+     */
+    public function delete($key)
+    {
+        return unlink(storage_path('cache/' . $key . '.php')) !== false;
+    }
+
+    /**
+     * 清空缓存
+     * @return bool
+     */
+    public function clear()
+    {
+        // return rmdir(storage_path('cache')) !== false;
+        return true;
+    }
+
+    /**
+     * 检查缓存是否存在
+     * @param string $key
+     * @return bool
+     */
+    public function has($key)
+    {
+        return file_exists(storage_path('cache/' . $key . '.php'));
+    }
+}
+
+/**
+ * @id 9025
+ * Curl类
+ */
+class Curl
+{
+    private static $lastError = [];
+    private static $lastInfo = [];
+
+    /**
+     * 发送Curl请求
+     * @param string $url 请求URL
+     * @param array $data 请求数据
+     * @param array $options 请求选项
+     * @return mixed|null
+     */
+    public static function query($url, $data = [], $options = [])
+    {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_HEADER, false);
+        if (isset($options['ssl_cert']) && isset($options['ssl_key'])) {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+
+            curl_setopt($ch, CURLOPT_SSLCERTTYPE, 'PEM');
+            curl_setopt($ch, CURLOPT_SSLCERT, $options['ssl_cert']);
+            curl_setopt($ch, CURLOPT_SSLKEYTYPE, 'PEM');
+            curl_setopt($ch, CURLOPT_SSLKEY, $options['ssl_key']);
+        } else {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        }
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        if (!empty($data)) {
+            curl_setopt($ch, CURLOPT_POST, 1);
+            if (is_array($data)) {
+                $data = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        } elseif (isset($options['upload']) && is_array($options['upload'])) {
+            curl_setopt($ch, CURLOPT_POST, 1);
+            $data = [];
+            foreach ($options['upload'] as $k=>$v) {
+                try {
+                    if (is_array($v)) {
+                        $data[$k] = new \CURLFile($v['path'], $v['type'], $v['name']);
+                    } else {
+                        $data[$k] = curl_file_create($v);
+                    }
+                    if (empty($data[$k])) {
+                        return false;
+                    }
+                } catch (\Exception $e) {
+                    throw new AppException(9025000001, $e->getCode() . ':' . $e->getMessage());
+                }
+            }
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        }
+        if (!empty($options['headers']) && is_array($options['headers'])) {
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $options['headers']);
+        }
+
+        $result = curl_exec($ch);
+        if (!$result) {
+            $result = null;
+            self::$lastError = [curl_errno($ch), curl_error($ch), $options];
+        }
+
+        self::$lastInfo = curl_getinfo($ch);
+        self::$lastInfo['options'] = $options;
+        $ch = null;
+
+        return $result;
+    }
+
+    /**
+     * 获取最后一次请求错误信息
+     * @return array
+     */
+    public static function getLastError()
+    {
+        return self::$lastError;
+    }
+
+    /**
+     * 获取最后一次请求信息
+     * @return array
+     */
+    public static function getLastInfo()
+    {
+        return self::$lastInfo;
+    }
+}
+
+/**
  * 授权：无
  */
 const ACL_NON = 0;
@@ -4740,100 +5130,6 @@ class Consts
 
 }
 
-if (\PHP_VERSION_ID < 80000) {
-    if (!defined('FILTER_VALIDATE_BOOL') && defined('FILTER_VALIDATE_BOOLEAN')) {
-        define('FILTER_VALIDATE_BOOL', \FILTER_VALIDATE_BOOLEAN);
-    }
-
-    if (!function_exists('fdiv')) {
-        function fdiv(float $num1, float $num2): float {
-            return @($num1 / $num2);
-        }
-    }
-
-    if (!function_exists('preg_last_error_msg')) {
-        function preg_last_error_msg(): string {
-            switch (preg_last_error()) {
-                case \PREG_INTERNAL_ERROR:
-                    return 'Internal error';
-                case \PREG_BAD_UTF8_ERROR:
-                    return 'Malformed UTF-8 characters, possibly incorrectly encoded';
-                case \PREG_BAD_UTF8_OFFSET_ERROR:
-                    return 'The offset did not correspond to the beginning of a valid UTF-8 code point';
-                case \PREG_BACKTRACK_LIMIT_ERROR:
-                    return 'Backtrack limit exhausted';
-                case \PREG_RECURSION_LIMIT_ERROR:
-                    return 'Recursion limit exhausted';
-                case \PREG_JIT_STACKLIMIT_ERROR:
-                    return 'JIT stack limit exhausted';
-                case \PREG_NO_ERROR:
-                    return 'No error';
-                default:
-                    return 'Unknown error';
-            }
-        }
-    }
-
-    if (!function_exists('str_contains')) {
-        function str_contains(?string $haystack, ?string $needle): bool {
-            return '' === $needle || false !== strpos($haystack, $needle);
-        }
-    }
-
-    if (!function_exists('str_starts_with')) {
-        function str_starts_with(?string $haystack, ?string $needle): bool
-        {
-            return 0 === strncmp($haystack, $needle, \strlen($needle));
-        }
-    }
-
-    if (!function_exists('str_ends_with')) {
-        function str_ends_with(?string $haystack, ?string $needle): bool
-        {
-            if ('' === $needle || $needle === $haystack) {
-                return true;
-            }
-
-            if ('' === $haystack) {
-                return false;
-            }
-
-            $needleLength = \strlen($needle);
-
-            return $needleLength <= \strlen($haystack) && 0 === substr_compare($haystack, $needle, -$needleLength);
-        }
-    }
-}
-
-if (\PHP_VERSION_ID < 80100) {
-    if (defined('MYSQLI_REFRESH_SLAVE') && !defined('MYSQLI_REFRESH_REPLICA')) {
-        define('MYSQLI_REFRESH_REPLICA', 64);
-    }
-
-    if (\extension_loaded('curl') && !defined('CURLOPT_ISSUERCERT_BLOB') && curl_version()['version_number'] >= 0x074700) {
-        define('CURLOPT_ISSUERCERT_BLOB', 40295);
-    }
-
-    if (!function_exists('array_is_list')) {
-        function array_is_list(array $array): bool
-        {
-            if ([] === $array || $array === array_values($array)) {
-                return true;
-            }
-
-            $nextKey = -1;
-
-            foreach ($array as $k => $v) {
-                if ($k !== ++$nextKey) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-    }
-}
-
 /**
  * 打印变量
  * @param mixed $expression
@@ -4846,6 +5142,45 @@ function var_output($expression) {
     $array = preg_replace(["/\s*array\s\($/", "/\)(,)?$/", "/\s=>\s$/"], [NULL, ']$1', ' => ['], $array);
     $export = join("\n", array_filter(["["] + $array));
     return $export;
+}
+
+if (!function_exists('str_contains')) {
+    /**
+     * 字符串是否包含子字符串
+     * @param string $haystack
+     * @param string $needle
+     * @return bool
+     */
+    function str_contains($haystack, $needle)
+    {
+        return $needle === '' || strpos($haystack, $needle) !== false;
+    }
+}
+
+if (!function_exists('str_starts_with')) {
+    /**
+     * 字符串是否以子字符串开头
+     * @param string $haystack
+     * @param string $needle
+     * @return bool
+     */
+    function str_starts_with($haystack, $needle)
+    {
+        return $needle === '' || strncmp($haystack, $needle, strlen($needle)) === 0;
+    }
+}
+
+if (!function_exists('str_ends_with')) {
+    /**
+     * 字符串是否以子字符串结尾
+     * @param string $haystack
+     * @param string $needle
+     * @return bool
+     */
+    function str_ends_with($haystack, $needle)
+    {
+        return $needle === '' || substr($haystack, -strlen($needle)) === $needle;
+    }
 }
 
 /**
